@@ -6,81 +6,158 @@ import {
   TouchableOpacity,
   StyleSheet,
   SafeAreaView,
+  ActivityIndicator,
 } from 'react-native';
 import { createUserWithEmailAndPassword } from 'firebase/auth';
 import { auth } from '../../services/firebase';
+import { useTheme } from '../../services/ThemeContext';
 
 const SignUpScreen = ({ navigation }) => {
+  const { theme } = useTheme();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [acceptedTerms, setAcceptedTerms] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
 
   const handleSignUp = async () => {
+    if (loading) return;
+    
     if (!acceptedTerms) {
-      alert('Please accept the Terms of Service and Privacy Policy');
+      setError('Please accept the Terms of Service and Privacy Policy');
       return;
     }
 
+    if (!email || !password) {
+      setError('Please fill in all fields');
+      return;
+    }
+
+    if (password.length < 6) {
+      setError('Password must be at least 6 characters long');
+      return;
+    }
+
+    setLoading(true);
+    setError('');
+
     try {
-      const userCredential = await createUserWithEmailAndPassword(auth, email, password);
-      console.log('User created:', userCredential.user);
+      await createUserWithEmailAndPassword(auth, email, password);
     } catch (error) {
-      alert(error.message);
+      console.error('Sign up error:', error);
+      switch (error.code) {
+        case 'auth/email-already-in-use':
+          setError('This email is already registered. Please sign in instead.');
+          break;
+        case 'auth/invalid-email':
+          setError('Please enter a valid email address.');
+          break;
+        case 'auth/weak-password':
+          setError('Password is too weak. Please use a stronger password.');
+          break;
+        default:
+          setError('An error occurred during sign up. Please try again.');
+      }
+    } finally {
+      setLoading(false);
     }
   };
 
   return (
-    <SafeAreaView style={styles.container}>
+    <SafeAreaView style={[styles.container, { backgroundColor: theme.background }]}>
       <View style={styles.content}>
-        <Text style={styles.title}>Sign Up</Text>
+        <Text style={[styles.title, { color: theme.text }]}>Create Account</Text>
         
         <TextInput
-          style={styles.input}
+          style={[styles.input, { 
+            borderColor: theme.border,
+            backgroundColor: theme.surface,
+            color: theme.text,
+          }]}
           placeholder="Email"
+          placeholderTextColor={theme.textSecondary}
           value={email}
-          onChangeText={setEmail}
+          onChangeText={(text) => {
+            setEmail(text);
+            setError('');
+          }}
           keyboardType="email-address"
           autoCapitalize="none"
+          editable={!loading}
         />
         
         <TextInput
-          style={styles.input}
+          style={[styles.input, { 
+            borderColor: theme.border,
+            backgroundColor: theme.surface,
+            color: theme.text,
+          }]}
           placeholder="Password"
+          placeholderTextColor={theme.textSecondary}
           value={password}
-          onChangeText={setPassword}
+          onChangeText={(text) => {
+            setPassword(text);
+            setError('');
+          }}
           secureTextEntry
+          editable={!loading}
         />
         
         <View style={styles.termsContainer}>
           <TouchableOpacity
-            style={styles.checkbox}
-            onPress={() => setAcceptedTerms(!acceptedTerms)}
+            style={[styles.checkbox, { borderColor: theme.primary }]}
+            onPress={() => {
+              setAcceptedTerms(!acceptedTerms);
+              setError('');
+            }}
+            disabled={loading}
           >
             <View style={[
               styles.checkboxInner,
-              acceptedTerms && styles.checkboxChecked
+              acceptedTerms && { backgroundColor: theme.primary }
             ]} />
           </TouchableOpacity>
-          <Text style={styles.termsText}>
+          <Text style={[styles.termsText, { color: theme.textSecondary }]}>
             I agree to the{' '}
-            <Text style={styles.link}>Terms of Service</Text>
+            <Text style={[styles.link, { color: theme.primary }]}>Terms of Service</Text>
             {' '}and{' '}
-            <Text style={styles.link}>Privacy Policy</Text>
+            <Text style={[styles.link, { color: theme.primary }]}>Privacy Policy</Text>
           </Text>
         </View>
+
+        {error ? (
+          <Text style={[styles.errorText, { color: theme.error }]}>
+            {error}
+          </Text>
+        ) : null}
         
         <TouchableOpacity
-          style={[styles.button, !acceptedTerms && styles.buttonDisabled]}
+          style={[
+            styles.button,
+            { backgroundColor: theme.primary },
+            (!acceptedTerms || loading) && styles.buttonDisabled
+          ]}
           onPress={handleSignUp}
-          disabled={!acceptedTerms}
+          disabled={!acceptedTerms || loading}
         >
-          <Text style={styles.buttonText}>Continue</Text>
+          {loading ? (
+            <ActivityIndicator color="#fff" />
+          ) : (
+            <Text style={styles.buttonText}>Create Account</Text>
+          )}
         </TouchableOpacity>
         
         <View style={styles.signInContainer}>
-          <Text style={styles.signInText}>Have an Account? </Text>
-          <TouchableOpacity onPress={() => navigation.navigate('SignIn')}>
-            <Text style={styles.signInLink}>Sign In</Text>
+          <Text style={[styles.signInText, { color: theme.textSecondary }]}>
+            Have an Account?{' '}
+          </Text>
+          <TouchableOpacity 
+            onPress={() => navigation.navigate('SignIn')}
+            disabled={loading}
+          >
+            <Text style={[styles.signInLink, { color: theme.primary }]}>
+              Sign In
+            </Text>
           </TouchableOpacity>
         </View>
       </View>
@@ -91,7 +168,6 @@ const SignUpScreen = ({ navigation }) => {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#fff',
   },
   content: {
     flex: 1,
@@ -105,7 +181,6 @@ const styles = StyleSheet.create({
   },
   input: {
     borderWidth: 1,
-    borderColor: '#ddd',
     padding: 15,
     borderRadius: 8,
     marginBottom: 16,
@@ -120,7 +195,6 @@ const styles = StyleSheet.create({
     width: 24,
     height: 24,
     borderWidth: 2,
-    borderColor: '#007AFF',
     borderRadius: 4,
     marginRight: 8,
     padding: 2,
@@ -129,25 +203,20 @@ const styles = StyleSheet.create({
     flex: 1,
     borderRadius: 2,
   },
-  checkboxChecked: {
-    backgroundColor: '#007AFF',
-  },
   termsText: {
     flex: 1,
     fontSize: 14,
-    color: '#666',
   },
   link: {
-    color: '#007AFF',
+    fontWeight: '500',
   },
   button: {
-    backgroundColor: '#007AFF',
     padding: 15,
     borderRadius: 8,
     alignItems: 'center',
   },
   buttonDisabled: {
-    backgroundColor: '#ccc',
+    opacity: 0.6,
   },
   buttonText: {
     color: '#fff',
@@ -159,11 +228,12 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     marginTop: 24,
   },
-  signInText: {
-    color: '#666',
+  errorText: {
+    marginBottom: 16,
+    fontSize: 14,
+    textAlign: 'center',
   },
   signInLink: {
-    color: '#007AFF',
     fontWeight: '600',
   },
 });

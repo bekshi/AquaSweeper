@@ -1,44 +1,68 @@
-import React, { useState, useEffect } from 'react';
-import { 
-  View, 
-  Text, 
-  StyleSheet, 
-  TouchableOpacity, 
-  Alert 
+import React, { useState, useEffect, useRef } from 'react';
+import {
+  View,
+  Text,
+  StyleSheet,
+  TouchableOpacity,
+  SafeAreaView,
+  Alert,
+  Animated,
 } from 'react-native';
-import Svg, { Circle } from 'react-native-svg';
-import { useAuth } from '../services/AuthContext';
-import { db } from '../services/firebase';
-import { collection, addDoc, doc } from 'firebase/firestore';
+import { MaterialCommunityIcons } from '@expo/vector-icons';
+import { useTheme } from '../services/ThemeContext';
 
-const HomeScreen = ({ navigation }) => {
-  const [batteryPercentage, setBatteryPercentage] = useState(64);
+const HomeScreen = () => {
+  const { theme } = useTheme();
   const [isRunning, setIsRunning] = useState(false);
   const [elapsedTime, setElapsedTime] = useState(0);
-  const { user } = useAuth();
-  const skimmerId = "AS-001"; // This should come from your connected device state
+  const batteryLevel = 85; // Mock battery level
+  const pulseAnim = useRef(new Animated.Value(1)).current;
 
   useEffect(() => {
     let interval;
     if (isRunning) {
       interval = setInterval(() => {
-        setElapsedTime((prev) => prev + 1);
+        setElapsedTime(time => time + 1);
       }, 1000);
+      
+      // Start pulse animation
+      Animated.loop(
+        Animated.sequence([
+          Animated.timing(pulseAnim, {
+            toValue: 1.2,
+            duration: 1000,
+            useNativeDriver: true,
+          }),
+          Animated.timing(pulseAnim, {
+            toValue: 1,
+            duration: 1000,
+            useNativeDriver: true,
+          }),
+        ])
+      ).start();
+    } else {
+      pulseAnim.setValue(1);
     }
-    return () => clearInterval(interval);
+
+    return () => {
+      if (interval) clearInterval(interval);
+    };
   }, [isRunning]);
 
   const formatTime = (seconds) => {
-    const minutes = Math.floor(seconds / 60);
-    const remainingSeconds = seconds % 60;
-    return `${minutes}:${remainingSeconds.toString().padStart(2, '0')}`;
+    const hrs = Math.floor(seconds / 3600);
+    const mins = Math.floor((seconds % 3600) / 60);
+    const secs = seconds % 60;
+    return `${hrs.toString().padStart(2, '0')}:${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
   };
 
-  const toggleRunning = () => {
+  const handleToggleRun = () => {
     setIsRunning(!isRunning);
   };
 
   const handleEndRun = () => {
+    if (!elapsedTime) return;
+
     Alert.alert(
       "End Current Run",
       "Are you sure you want to end the current run?",
@@ -49,274 +73,189 @@ const HomeScreen = ({ navigation }) => {
         },
         {
           text: "Yes",
-          onPress: async () => {
-            try {
-              // Save the current session data
-              const sessionData = {
-                duration: elapsedTime,
-                date: new Date(),
-                batteryUsed: 64 - batteryPercentage,
-                userId: user.uid,
-                deviceName: "Backyard Pool", // Get this from connected device
-              };
-              
-              // Reference to the skimmer's cleaningSessions collection
-              const skimmerRef = doc(db, 'skimmers', skimmerId);
-              const cleaningSessionsRef = collection(skimmerRef, 'cleaningSessions');
-              
-              // Save to Firebase
-              const docRef = await addDoc(cleaningSessionsRef, sessionData);
-              console.log('Session saved with ID:', docRef.id);
-
-              // Reset the timer and stop running
-              setIsRunning(false);
-              setElapsedTime(0);
-
-              // Show confirmation message
-              Alert.alert(
-                "Run Saved",
-                "Your cleaning session has been saved. You can view it in the Information screen.",
-                [
-                  {
-                    text: "View History",
-                    onPress: () => navigation.navigate('Information')
-                  },
-                  {
-                    text: "OK",
-                    style: "cancel"
-                  }
-                ]
-              );
-            } catch (error) {
-              console.error('Error saving session:', error);
-              Alert.alert(
-                "Error",
-                "Failed to save cleaning session. Please try again."
-              );
-            }
+          onPress: () => {
+            setElapsedTime(0);
+            setIsRunning(false);
+            Alert.alert('Run Completed', 'Your cleaning session has ended.', [{ text: 'OK' }]);
           }
         }
       ]
     );
   };
 
-  // Calculate circle properties for battery indicator
-  const radius = 50;
-  const circumference = 2 * Math.PI * radius;
-  const strokeDashoffset = circumference * (1 - batteryPercentage / 100);
-
   return (
-    <View style={styles.container}>
+    <SafeAreaView style={[styles.container, { backgroundColor: theme.background }]}>
       <View style={styles.content}>
-        {/* Battery Section */}
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Battery Status</Text>
-          <View style={styles.batteryContainer}>
-            <Svg width={120} height={120}>
-              <Circle
-                cx={60}
-                cy={60}
-                r={radius}
-                stroke="#E0E0E0"
-                strokeWidth={10}
-                fill="none"
-              />
-              <Circle
-                cx={60}
-                cy={60}
-                r={radius}
-                stroke="#4CAF50"
-                strokeWidth={10}
-                fill="none"
-                strokeDasharray={circumference}
-                strokeDashoffset={strokeDashoffset}
-                strokeLinecap="round"
-                transform="rotate(-90 60 60)"
-              />
-            </Svg>
-            <Text style={styles.batteryText}>{`${batteryPercentage}%`}</Text>
+        {/* Status Card */}
+        <View style={[styles.card, { backgroundColor: theme.surface, borderColor: theme.border }]}>
+          <View style={styles.cardHeader}>
+            <MaterialCommunityIcons name="robot" size={24} color={theme.primary} />
+            <Text style={[styles.cardTitle, { color: theme.text }]}>AquaSweeper Status</Text>
           </View>
-        </View>
+          
+          {/* Battery and Status */}
+          <View style={styles.statusRow}>
+            <View style={styles.batteryContainer}>
+              <MaterialCommunityIcons 
+                name={batteryLevel > 20 ? "battery-high" : "battery-low"} 
+                size={24} 
+                color={batteryLevel > 20 ? theme.success : theme.error} 
+              />
+              <Text style={[styles.batteryText, { color: theme.text }]}>{batteryLevel}%</Text>
+            </View>
+            <View style={styles.statusContainer}>
+              <View style={[styles.statusDot, { backgroundColor: isRunning ? theme.success : theme.textSecondary }]} />
+              <Text style={[styles.statusText, { color: theme.text }]}>
+                {isRunning ? 'Running' : 'Ready'}
+              </Text>
+            </View>
+          </View>
 
-        {/* Controls Section */}
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Controls</Text>
-          <View style={styles.controlsContainer}>
-            {/* Play/Pause Button */}
-            <TouchableOpacity 
-              style={[
-                styles.playButton,
-                isRunning && styles.playButtonActive
-              ]} 
-              onPress={toggleRunning}
-            >
-              <View style={styles.playButtonInner}>
-                {isRunning ? (
-                  <View style={styles.pauseContainer}>
-                    <View style={styles.pauseBar} />
-                    <View style={styles.pauseBar} />
-                  </View>
-                ) : (
-                  <View style={styles.playIcon} />
-                )}
-              </View>
-            </TouchableOpacity>
+          {/* Timer Display */}
+          <View style={styles.timerContainer}>
+            <Animated.View style={[styles.timerCircle, 
+              { 
+                borderColor: isRunning ? theme.success : theme.primary,
+                transform: [{ scale: isRunning ? pulseAnim : 1 }]
+              }
+            ]}>
+              <Text style={[styles.timerText, { color: theme.text }]}>{formatTime(elapsedTime)}</Text>
+              <Text style={[styles.timerLabel, { color: theme.textSecondary }]}>Current Run Time</Text>
+            </Animated.View>
+          </View>
 
-            {/* End Run Button - Always visible */}
-            <TouchableOpacity 
+          {/* Control Buttons */}
+          <View style={styles.buttonContainer}>
+            <TouchableOpacity
               style={[
-                styles.endRunButton,
-                !elapsedTime && styles.endRunButtonDisabled
-              ]} 
-              onPress={handleEndRun}
-              disabled={!elapsedTime}
+                styles.button,
+                { backgroundColor: isRunning ? theme.error : theme.primary }
+              ]}
+              onPress={handleToggleRun}
             >
-              <Text style={[
-                styles.endRunText,
-                !elapsedTime && styles.endRunTextDisabled
-              ]}>
-                End Current Run
+              <MaterialCommunityIcons
+                name={isRunning ? "pause" : "play"}
+                size={24}
+                color="#fff"
+              />
+              <Text style={styles.buttonText}>
+                {isRunning ? 'Pause' : 'Start'}
               </Text>
             </TouchableOpacity>
-          </View>
-        </View>
 
-        {/* Timer Section */}
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Current Run Time</Text>
-          <View style={styles.timerContainer}>
-            <Text style={styles.timerText}>{formatTime(elapsedTime)}</Text>
+            {elapsedTime > 0 && (
+              <TouchableOpacity
+                style={[styles.button, { backgroundColor: theme.error }]}
+                onPress={handleEndRun}
+              >
+                <MaterialCommunityIcons name="stop" size={24} color="#fff" />
+                <Text style={styles.buttonText}>End Run</Text>
+              </TouchableOpacity>
+            )}
           </View>
         </View>
       </View>
-    </View>
+    </SafeAreaView>
   );
 };
 
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#fff',
   },
   content: {
     flex: 1,
-    justifyContent: 'space-around',
-    alignItems: 'center',
-    paddingVertical: 50,
+    padding: 16,
   },
-  section: {
-    alignItems: 'center',
-    width: '100%',
-    paddingHorizontal: 20,
-  },
-  sectionTitle: {
-    fontSize: 18,
-    fontWeight: '600',
-    color: '#333',
-    marginBottom: 16,
-    textAlign: 'center',
-  },
-  batteryContainer: {
-    alignItems: 'center',
-    position: 'relative',
-  },
-  batteryText: {
-    position: 'absolute',
-    top: '50%',
-    fontSize: 20,
-    fontWeight: 'bold',
-    color: '#333',
-    transform: [{ translateY: -10 }],
-  },
-  controlsContainer: {
-    alignItems: 'center',
-    justifyContent: 'center',
-    width: '100%',
-  },
-  playButton: {
-    width: 80,
-    height: 80,
-    borderRadius: 40,
-    backgroundColor: '#007AFF',
-    justifyContent: 'center',
-    alignItems: 'center',
-    elevation: 5,
+  card: {
+    borderRadius: 16,
+    padding: 20,
+    borderWidth: 1,
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.25,
-    shadowRadius: 3.84,
+    shadowOpacity: 0.1,
+    shadowRadius: 4,
+    elevation: 3,
+  },
+  cardHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
     marginBottom: 20,
   },
-  playButtonActive: {
-    backgroundColor: '#0056b3',
+  cardTitle: {
+    fontSize: 20,
+    fontWeight: 'bold',
+    marginLeft: 12,
   },
-  playButtonInner: {
-    width: 40,
-    height: 40,
-    justifyContent: 'center',
+  statusRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 24,
+  },
+  batteryContainer: {
+    flexDirection: 'row',
     alignItems: 'center',
   },
-  playIcon: {
-    width: 0,
-    height: 0,
-    backgroundColor: 'transparent',
-    borderStyle: 'solid',
-    borderLeftWidth: 24,
-    borderRightWidth: 0,
-    borderBottomWidth: 16,
-    borderTopWidth: 16,
-    borderLeftColor: '#fff',
-    borderRightColor: 'transparent',
-    borderBottomColor: 'transparent',
-    borderTopColor: 'transparent',
-    marginLeft: 8,
-  },
-  pauseContainer: {
-    flexDirection: 'row',
-    width: 24,
-    justifyContent: 'space-between',
-  },
-  pauseBar: {
-    width: 8,
-    height: 24,
-    backgroundColor: '#fff',
-    borderRadius: 2,
-  },
-  endRunButton: {
-    backgroundColor: '#FF3B30',
-    paddingVertical: 12,
-    paddingHorizontal: 24,
-    borderRadius: 8,
-    width: '80%',
-    elevation: 3,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.25,
-    shadowRadius: 3.84,
-  },
-  endRunButtonDisabled: {
-    backgroundColor: '#ffcccb',
-  },
-  endRunText: {
-    color: '#fff',
+  batteryText: {
     fontSize: 16,
     fontWeight: '600',
-    textAlign: 'center',
+    marginLeft: 8,
   },
-  endRunTextDisabled: {
-    color: '#999',
+  statusContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  statusDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    marginRight: 8,
+  },
+  statusText: {
+    fontSize: 16,
+    fontWeight: '600',
   },
   timerContainer: {
     alignItems: 'center',
-    backgroundColor: '#f5f5f5',
-    paddingVertical: 16,
-    paddingHorizontal: 32,
-    borderRadius: 12,
+    marginBottom: 24,
+  },
+  timerCircle: {
+    width: 200,
+    height: 200,
+    borderRadius: 100,
+    borderWidth: 4,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginVertical: 20,
   },
   timerText: {
     fontSize: 32,
     fontWeight: 'bold',
-    color: '#333',
+    marginBottom: 8,
+  },
+  timerLabel: {
+    fontSize: 14,
+  },
+  buttonContainer: {
+    flexDirection: 'row',
+    justifyContent: 'space-around',
+    marginTop: 16,
+  },
+  button: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 12,
+    paddingHorizontal: 24,
+    borderRadius: 12,
+    minWidth: 140,
+    justifyContent: 'center',
+  },
+  buttonText: {
+    color: '#fff',
+    fontSize: 16,
+    fontWeight: '600',
+    marginLeft: 8,
   },
 });
 
