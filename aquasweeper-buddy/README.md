@@ -1,50 +1,155 @@
-# Welcome to your Expo app 👋
+# 📱 AquaSweeper Buddy
 
-This is an [Expo](https://expo.dev) project created with [`create-expo-app`](https://www.npmjs.com/package/create-expo-app).
+Your smart companion app for the AquaSweeper pool cleaning system! 🏊‍♂️
 
-## Get started
+## ✨ Features
 
-1. Install dependencies
+### 🎯 Core Features
 
+- **Real-Time Monitoring** 📊
+  - Live device status tracking
+  - Battery level monitoring
+  - Cleaning progress visualization
+  - Connection status indicators
+
+- **Smart Controls** 🎮
+  - Start/Pause cleaning sessions
+  - Schedule automated cleanings
+  - Manual navigation controls
+  - Emergency stop functionality
+
+- **Maintenance Hub** 🔧
+  - Maintenance alerts and reminders
+  - Filter status monitoring
+  - Battery health tracking
+  - Service history logging
+
+- **Analytics Dashboard** 📈
+  - Cleaning session history
+  - Performance statistics
+  - Battery usage patterns
+  - Coverage maps
+
+### 🎨 User Experience
+
+- **Intuitive Interface**
+  - Clean, modern design
+  - Easy navigation
+  - Dark mode support
+  - Responsive layouts
+
+- **Smart Notifications**
+  - Battery alerts
+  - Maintenance reminders
+  - Cleaning completion notices
+  - System status updates
+
+## 🛠️ Technical Details
+
+### Tech Stack
+- **Frontend**: React Native
+- **State Management**: React Context
+- **Backend Integration**: Firebase
+- **Authentication**: Firebase Auth
+- **Database**: Cloud Firestore
+- **Storage**: Firebase Storage
+
+### System Requirements
+- iOS 13.0 or later
+- Android 8.0 or later
+- Bluetooth 4.0 LE support
+- Internet connectivity
+
+## 📲 Installation
+
+1. Clone the repository:
+   ```bash
+   git clone https://github.com/yourusername/aquasweeper.git
+   cd aquasweeper/aquasweeper-buddy
+   ```
+
+2. Install dependencies:
    ```bash
    npm install
    ```
 
-2. Start the app
+3. Set up environment variables:
+   - Copy `.env.example` to `.env`
+   - Fill in your Firebase configuration
 
+4. Start the development server:
    ```bash
-    npx expo start
+   npm start
    ```
 
-In the output, you'll find options to open the app in a
+## 🧪 Testing
 
-- [development build](https://docs.expo.dev/develop/development-builds/introduction/)
-- [Android emulator](https://docs.expo.dev/workflow/android-studio-emulator/)
-- [iOS simulator](https://docs.expo.dev/workflow/ios-simulator/)
-- [Expo Go](https://expo.dev/go), a limited sandbox for trying out app development with Expo
-
-You can start developing by editing the files inside the **app** directory. This project uses [file-based routing](https://docs.expo.dev/router/introduction).
-
-## Get a fresh project
-
-When you're ready, run:
-
+Run the test suite:
 ```bash
-npm run reset-project
+npm test
 ```
 
-This command will move the starter code to the **app-example** directory and create a blank **app** directory where you can start developing.
+## 📱 Screens
 
-## Learn more
+### Home Screen
+- Device status overview
+- Quick action buttons
+- Current cleaning status
+- Battery level indicator
 
-To learn more about developing your project with Expo, look at the following resources:
+### Maintenance Screen
+- Maintenance schedule
+- Alert history
+- Service records
+- Component status
 
-- [Expo documentation](https://docs.expo.dev/): Learn fundamentals, or go into advanced topics with our [guides](https://docs.expo.dev/guides).
-- [Learn Expo tutorial](https://docs.expo.dev/tutorial/introduction/): Follow a step-by-step tutorial where you'll create a project that runs on Android, iOS, and the web.
+### Settings Screen
+- User preferences
+- Device settings
+- Notification controls
+- Account management
 
-## Join the community
+### Information Screen
+- Device information
+- Cleaning history
+- Performance stats
+- System health
 
-Join our community of developers creating universal apps.
+## 🤝 Contributing
 
-- [Expo on GitHub](https://github.com/expo/expo): View our open source platform and contribute.
-- [Discord community](https://chat.expo.dev): Chat with Expo users and ask questions.
+We love your input! We want to make contributing to AquaSweeper Buddy as easy and transparent as possible. Please:
+
+1. Fork the repo
+2. Create your feature branch
+3. Commit your changes
+4. Push to the branch
+5. Create a pull request
+
+## 🐛 Bug Reports
+
+Found a bug? Please help us squash it by:
+
+1. Checking if the bug has already been reported
+2. Opening a new issue with:
+   - Clear description of the problem
+   - Steps to reproduce
+   - Expected behavior
+   - Screenshots if applicable
+   - Device and app version information
+
+## 📄 License
+
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+
+## 🙌 Acknowledgments
+
+- Thanks to all our beta testers
+- The React Native community
+- Our amazing development team
+- All our users who provide valuable feedback
+
+---
+
+💡 For more information about the AquaSweeper project, visit our [main repository](https://github.com/yourusername/aquasweeper).
+
+Made with 💙 by the AquaSweeper Team
