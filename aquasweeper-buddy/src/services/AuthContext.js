@@ -1,29 +1,46 @@
-import React, { createContext, useState, useContext, useEffect } from 'react';
-import { onAuthStateChanged } from 'firebase/auth';
-import { auth } from './firebase';
+import React, { createContext, useState, useEffect } from "react";
+import auth from "@react-native-firebase/auth";
 
-const AuthContext = createContext({});
+export const AuthContext = createContext();
 
 export const AuthProvider = ({ children }) => {
   const [user, setUser] = useState(null);
-  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, (user) => {
+    const unsubscribe = auth().onAuthStateChanged((user) => {
       setUser(user);
-      setLoading(false);
     });
 
-    return unsubscribe;
+    return () => unsubscribe();
   }, []);
 
+  const signUp = async (email, password, additionalData) => {
+    try {
+      const userCredential = await auth().createUserWithEmailAndPassword(
+        email,
+        password
+      );
+      const uid = userCredential.user.uid;
+
+      await firebase
+        .firestore()
+        .collection("users")
+        .doc(uid)
+        .set({
+          ...additionalData,
+          createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+        });
+
+      return uid;
+    } catch (error) {
+      console.error("Sign-up error:", error.message);
+      throw error;
+    }
+  };
+
   return (
-    <AuthContext.Provider value={{ user, loading }}>
-      {!loading && children}
+    <AuthContext.Provider value={{ user, signUp }}>
+      {children}
     </AuthContext.Provider>
   );
-};
-
-export const useAuth = () => {
-  return useContext(AuthContext);
 };
