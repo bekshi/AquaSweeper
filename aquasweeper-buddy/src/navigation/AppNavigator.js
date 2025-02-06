@@ -12,6 +12,7 @@ import HomeScreen from '../screens/HomeScreen';
 import InformationScreen from '../screens/InformationScreen';
 import MaintenanceScreen from '../screens/MaintenanceScreen';
 import SettingsScreen from '../screens/SettingsScreen';
+import ScanDevicesScreen from '../screens/ScanDevicesScreen';
 
 const Stack = createNativeStackNavigator();
 const Drawer = createDrawerNavigator();
@@ -37,12 +38,35 @@ const DrawerNavigator = () => {
   );
 };
 
+const MainStack = () => {
+  return (
+    <Stack.Navigator>
+      <Stack.Screen 
+        name="DrawerStack" 
+        component={DrawerNavigator} 
+        options={{ headerShown: false }}
+      />
+      <Stack.Screen 
+        name="ScanDevices" 
+        component={ScanDevicesScreen}
+        options={{
+          title: 'Scan Devices',
+          headerStyle: {
+            backgroundColor: '#4CAF50',
+          },
+          headerTintColor: '#fff',
+        }}
+      />
+    </Stack.Navigator>
+  );
+};
+
 const AppNavigator = () => {
   const { user } = useAuth();
 
   return (
     <NavigationContainer>
-      {user ? <DrawerNavigator /> : <AuthStack />}
+      {user ? <MainStack /> : <AuthStack />}
     </NavigationContainer>
   );
 };

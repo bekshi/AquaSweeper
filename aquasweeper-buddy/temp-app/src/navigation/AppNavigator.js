@@ -7,6 +7,7 @@ import MaintenanceScreen from '../screens/MaintenanceScreen';
 import SettingsScreen from '../screens/SettingsScreen';
 import SignInScreen from '../screens/auth/SignInScreen';
 import SignUpScreen from '../screens/auth/SignUpScreen';
+import ScanDevicesScreen from '../screens/ScanDevicesScreen';
 import { useAuth } from '../services/AuthContext';
 import { useTheme } from '../services/ThemeContext';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
@@ -94,11 +95,36 @@ const MainNavigator = ({ theme }) => (
   </Drawer.Navigator>
 );
 
+const MainStack = ({ theme }) => (
+  <Stack.Navigator>
+    <Stack.Screen
+      name="DrawerScreens"
+      component={props => <MainNavigator theme={theme} {...props} />}
+      options={{ headerShown: false }}
+    />
+    <Stack.Screen
+      name="ScanDevices"
+      component={ScanDevicesScreen}
+      options={{
+        title: 'Scan Devices',
+        headerStyle: {
+          backgroundColor: theme.background,
+          elevation: 0,
+          shadowOpacity: 0,
+          borderBottomWidth: 1,
+          borderBottomColor: theme.border,
+        },
+        headerTintColor: theme.text,
+      }}
+    />
+  </Stack.Navigator>
+);
+
 const AppNavigator = () => {
   const { user } = useAuth();
   const { theme } = useTheme();
 
-  return user ? <MainNavigator theme={theme} /> : <AuthNavigator />;
+  return user ? <MainStack theme={theme} /> : <AuthNavigator />;
 };
 
 export default AppNavigator;

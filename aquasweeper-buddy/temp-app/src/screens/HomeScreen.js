@@ -10,6 +10,7 @@ import {
 } from 'react-native';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useTheme } from '../services/ThemeContext';
+import { useNavigation } from '@react-navigation/native';
 
 const HomeScreen = () => {
   const { theme } = useTheme();
@@ -17,6 +18,7 @@ const HomeScreen = () => {
   const [elapsedTime, setElapsedTime] = useState(0);
   const batteryLevel = 85; // Mock battery level
   const pulseAnim = useRef(new Animated.Value(1)).current;
+  const navigation = useNavigation();
 
   useEffect(() => {
     let interval;
@@ -155,6 +157,13 @@ const HomeScreen = () => {
           </View>
         </View>
       </View>
+      
+      {/* Floating Action Button */}
+      <TouchableOpacity
+        style={[styles.fab, { backgroundColor: theme.primary }]}
+        onPress={() => navigation.navigate('ScanDevices')}>
+        <MaterialCommunityIcons name="plus" size={30} color="white" />
+      </TouchableOpacity>
     </SafeAreaView>
   );
 };
@@ -256,6 +265,22 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: '600',
     marginLeft: 8,
+  },
+  fab: {
+    position: 'absolute',
+    bottom: 20,
+    right: 20,
+    width: 56,
+    height: 56,
+    borderRadius: 28,
+    justifyContent: 'center',
+    alignItems: 'center',
+    elevation: 8,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.25,
+    shadowRadius: 4,
+    zIndex: 1000,
   },
 });
 
