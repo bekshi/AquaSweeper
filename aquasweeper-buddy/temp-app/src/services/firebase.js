@@ -1,8 +1,6 @@
 import { initializeApp } from 'firebase/app';
-import { getAuth, createUserWithEmailAndPassword } from 'firebase/auth';
-import { getFirestore, doc, setDoc, serverTimestamp } from 'firebase/firestore';
+import { getAuth, GoogleAuthProvider, signInWithPopup, signInWithRedirect, getRedirectResult } from 'firebase/auth';
 
-// Your web app's Firebase configuration
 const firebaseConfig = {
   apiKey: "AIzaSyCUYwbheAI09BFgXoFiC3Q6HgCFo2P1X-M",
   authDomain: "aquasweeperbuddy.firebaseapp.com",
@@ -14,41 +12,43 @@ const firebaseConfig = {
 
 // Initialize Firebase
 const app = initializeApp(firebaseConfig);
-export const auth = getAuth(app);
-export const db = getFirestore(app);
+const auth = getAuth(app);
 
-// Function to create a new user and save their details to Firestore
-export const createUser = async (email, password, additionalData = {}) => {
+// Configure Google Auth Provider
+const googleProvider = new GoogleAuthProvider();
+googleProvider.addScope('profile');
+googleProvider.addScope('email');
+
+// Detect if we're running in a mobile browser
+const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator?.userAgent || '');
+
+// Function to handle Google Sign In
+const signInWithGoogle = async () => {
   try {
-    // Create the user in Firebase Auth
-    const userCredential = await createUserWithEmailAndPassword(auth, email, password);
-    const user = userCredential.user;
-
-    // Create a user document in Firestore
-    const userData = {
-      email: user.email,
-      userId: user.uid,
-      alertsEnabled: true,
-      appTheme: 'dark',
-      cleaningPreference: {
-        cleaningDuration: 120,
-        cleaningFrequency: 'daily',
-        startTime: 8
-      },
-      connectedDevices: [],
-      createdAt: serverTimestamp(),
-      lastLogin: serverTimestamp(),
-      notificationsToken: '',
-      profilePicture: '',
-      ...additionalData
-    };
-
-    await setDoc(doc(db, 'users', user.uid), userData);
-
-    return user;
+    if (isMobile) {
+      // Use redirect method for mobile browsers
+      await signInWithRedirect(auth, googleProvider);
+      // The result will be handled by getRedirectResult
+    } else {
+      // Use popup for desktop browsers
+      const result = await signInWithPopup(auth, googleProvider);
+      return result.user;
+    }
   } catch (error) {
+    console.error('Google Sign In Error:', error);
     throw error;
   }
 };
 
-export default app;
+// Function to get redirect result (for mobile flow)
+const getGoogleRedirectResult = async () => {
+  try {
+    const result = await getRedirectResult(auth);
+    return result?.user;
+  } catch (error) {
+    console.error('Redirect Result Error:', error);
+    throw error;
+  }
+};
+
+export { auth, signInWithGoogle, getGoogleRedirectResult };
