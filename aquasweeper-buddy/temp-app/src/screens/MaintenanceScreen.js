@@ -12,7 +12,7 @@ import {
 import { collection, query, orderBy, getDocs, doc } from 'firebase/firestore';
 import { db } from '../services/firebase';
 import { useAuth } from '../services/AuthContext';
-import { useTheme } from '../services/ThemeContext';
+import { useTheme } from '../theme/ThemeContext';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { Swipeable } from 'react-native-gesture-handler';
 

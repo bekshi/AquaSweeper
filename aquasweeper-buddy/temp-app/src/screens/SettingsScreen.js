@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import {
   View,
   Text,
@@ -13,75 +13,313 @@ import {
   Linking,
 } from 'react-native';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
+import { FontAwesome5 } from '@expo/vector-icons';
 import { useAuth } from '../services/AuthContext';
-import { useTheme } from '../services/ThemeContext';
-import { doc, getDoc, updateDoc } from 'firebase/firestore';
+import { useTheme } from '../theme/ThemeContext';
+import { doc, getDoc, updateDoc, onSnapshot } from 'firebase/firestore';
 import { db } from '../services/firebase';
 import { sendPasswordResetEmail } from 'firebase/auth';
 import { auth } from '../services/firebase';
+import { Animated } from 'react-native';
+import deviceConnectionService from '../services/DeviceConnectionService';
 
-const SettingsScreen = () => {
-  const { user, signOut } = useAuth();
-  const { isDarkMode, toggleTheme, theme } = useTheme();
-  const [loading, setLoading] = useState(true);
-  const [userSettings, setUserSettings] = useState(null);
-  const [alertsEnabled, setAlertsEnabled] = useState(true);
-  const [mockDevice] = useState({
-    id: 'AS-001',
-    name: 'Backyard Pool Skimmer',
-    status: 'Connected',
-    lastSync: new Date(),
-  });
+const DeviceStatusIndicator = ({ isConnected }) => {
+  const { theme } = useTheme();
+  return (
+    <View style={[
+      styles.statusIndicator,
+      { backgroundColor: isConnected ? '#4CAF50' : '#FF3B30' }
+    ]} />
+  );
+};
 
-  useEffect(() => {
-    fetchUserSettings();
+const BatteryIndicator = ({ percentage }) => {
+  const { theme } = useTheme();
+  const getBatteryColor = (level) => {
+    if (level > 50) return '#4CAF50';
+    if (level > 20) return '#FFA500';
+    return '#FF3B30';
+  };
+
+  return (
+    <View style={styles.batteryContainer}>
+      <MaterialCommunityIcons 
+        name="battery" 
+        size={20} 
+        color={getBatteryColor(percentage)} 
+      />
+      <Text style={[styles.batteryText, { color: theme.textSecondary }]}>
+        {percentage}%
+      </Text>
+    </View>
+  );
+};
+
+const getBatteryIcon = (level) => {
+  if (level >= 90) return 'full';
+  if (level >= 60) return 'three-quarters';
+  if (level >= 40) return 'half';
+  if (level >= 20) return 'quarter';
+  return 'empty';
+};
+
+const StatusIndicator = ({ status }) => {
+  const pulseAnim = React.useRef(new Animated.Value(1)).current;
+
+  React.useEffect(() => {
+    const pulse = Animated.sequence([
+      Animated.timing(pulseAnim, {
+        toValue: 0.7,
+        duration: 1000,
+        useNativeDriver: true,
+      }),
+      Animated.timing(pulseAnim, {
+        toValue: 1,
+        duration: 1000,
+        useNativeDriver: true,
+      })
+    ]);
+
+    Animated.loop(pulse).start();
   }, []);
 
-  const fetchUserSettings = async () => {
-    try {
-      const userDoc = await getDoc(doc(db, 'users', user.uid));
-      if (userDoc.exists()) {
-        const data = userDoc.data();
-        setUserSettings(data);
-        setAlertsEnabled(data.alertsEnabled);
+  const getStatusColor = () => {
+    switch (status) {
+      case 'connected':
+        return '#4CAF50'; // Green
+      case 'reconnecting':
+        return '#FFA000'; // Amber
+      case 'disconnected':
+        return '#F44336'; // Red
+      default:
+        return '#757575'; // Grey
+    }
+  };
+
+  return (
+    <Animated.View
+      style={[
+        styles.statusIndicator,
+        {
+          backgroundColor: getStatusColor(),
+          opacity: pulseAnim,
+        }
+      ]}
+    />
+  );
+};
+
+const DeviceItem = ({ device, onPress }) => {
+  const { theme } = useTheme();
+  
+  const getDeviceName = () => {
+    if (device.name) return device.name;
+    if (device.macAddress) return `AquaSweeper-${device.macAddress.slice(-4)}`;
+    return "Unknown Device";
+  };
+  
+  return (
+    <TouchableOpacity
+      style={[styles.deviceItem, { backgroundColor: theme.surface }]}
+      onPress={onPress}
+    >
+      <View style={styles.deviceInfo}>
+        <StatusIndicator status={device.isConnected ? 'connected' : 'disconnected'} />
+        <View style={styles.deviceTextContainer}>
+          <Text style={[styles.deviceName, { color: theme.text }]}>
+            {getDeviceName()}
+          </Text>
+          <Text style={[styles.deviceStatus, { color: theme.textSecondary }]}>
+            {device.isConnected ? 'Connected' : 'Disconnected'}
+          </Text>
+        </View>
+      </View>
+      <MaterialCommunityIcons 
+        name="chevron-right" 
+        size={24} 
+        color={theme.textSecondary} 
+      />
+    </TouchableOpacity>
+  );
+};
+
+const SettingsScreen = ({ navigation }) => {
+  const { user, signOut } = useAuth();
+  const { isDarkMode, setIsDarkMode, theme, toggleTheme } = useTheme();
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+  const [userSettings, setUserSettings] = useState(null);
+  const [devices, setDevices] = useState([]);
+  const [userProfile, setUserProfile] = useState(null);
+
+  useEffect(() => {
+    if (!user) return;
+
+    // Set up real-time listener for devices
+    const userRef = doc(db, 'users', user.uid);
+    const unsubscribe = onSnapshot(userRef, (doc) => {
+      if (doc.exists()) {
+        const userData = doc.data();
+        const updatedDevices = userData.settings?.devices || [];
+        setDevices(updatedDevices);
+        
+        // Start monitoring all devices
+        updatedDevices.forEach(device => {
+          deviceConnectionService.startMonitoring(device, user.uid);
+        });
       }
+    }, (error) => {
+      console.error('Error listening to devices:', error);
+    });
+
+    // Cleanup subscription and stop monitoring on unmount
+    return () => {
+      unsubscribe();
+      deviceConnectionService.stopMonitoringAll();
+    };
+  }, [user]);
+
+  const handleAddDevice = () => {
+    navigation.navigate('DevicePairing');
+  };
+
+  const handleRemoveDevice = async (deviceId) => {
+    try {
+      const userRef = doc(db, 'users', user.uid);
+      const userDoc = await getDoc(userRef);
+      const userData = userDoc.data();
+      const devices = userData.settings.devices.filter((device) => device.id !== deviceId);
+      await updateDoc(userRef, {
+        'settings.devices': devices,
+      });
+      setDevices(devices);
     } catch (error) {
-      console.error('Error fetching user settings:', error);
-      Alert.alert('Error', 'Failed to load user settings');
+      console.error('Error removing device:', error);
+      Alert.alert('Error', 'Failed to remove device');
+    }
+  };
+
+  // Validate authentication state
+  useEffect(() => {
+    let isMounted = true;
+    
+    const validateAuth = async () => {
+      if (!isMounted) return;
+      
+      setLoading(true);
+      setError(null);
+      
+      if (!user) {
+        setError('No authenticated user found');
+        navigation.replace('SignIn');
+        return;
+      }
+
+      if (!user.uid) {
+        setError('Invalid user state');
+        await signOut();
+        return;
+      }
+
+      // User is properly authenticated, proceed with data fetching
+      await fetchUserProfile();
+    };
+
+    validateAuth().catch(error => {
+      if (isMounted) {
+        console.error('Authentication validation error:', error);
+        setError('Failed to validate authentication');
+        setLoading(false);
+      }
+    });
+
+    return () => {
+      isMounted = false;
+    };
+  }, [user, navigation]);
+
+  const fetchUserProfile = async () => {
+    const abortController = new AbortController();
+    
+    try {
+      if (!user?.uid) {
+        throw new Error('No user ID available');
+      }
+
+      const userRef = doc(db, 'users', user.uid);
+      const userDoc = await getDoc(userRef);
+
+      if (abortController.signal.aborted) return;
+
+      if (!userDoc.exists()) {
+        throw new Error('User document not found');
+      }
+
+      const userData = userDoc.data();
+      setUserProfile(userData);
+      setUserSettings(userData.settings || {});
+    } catch (error) {
+      if (error.code === 'permission-denied') {
+        setError('Access denied. Please check your permissions.');
+      } else if (error.code === 'unavailable') {
+        setError('Service temporarily unavailable. Please try again later.');
+      } else {
+        console.error('Error fetching user profile:', error);
+        setError(error.message);
+      }
+    } finally {
+      if (!abortController.signal.aborted) {
+        setLoading(false);
+      }
+    }
+
+    return () => {
+      abortController.abort();
+    };
+  };
+
+  const handleResetPassword = async () => {
+    try {
+      await sendPasswordResetEmail(auth, user.email);
+      Alert.alert('Success', 'Password reset email sent. Please check your inbox.');
+    } catch (error) {
+      Alert.alert('Error', error.message);
+    }
+  };
+
+  const handleSignOut = async () => {
+    try {
+      await signOut();
+      // Navigation will be handled automatically by AppNavigator
+    } catch (error) {
+      console.error('Error signing out:', error);
+      Alert.alert('Error', 'Failed to sign out. Please try again.');
+    }
+  };
+
+  const handleToggleAlerts = async (value) => {
+    if (!user?.uid) {
+      setError('No authenticated user found');
+      return;
+    }
+
+    try {
+      setLoading(true);
+      const userRef = doc(db, 'users', user.uid);
+      
+      await updateDoc(userRef, {
+        'settings.notifications': value
+      });
+
+      setUserSettings((prevSettings) => ({ ...prevSettings, notifications: value }));
+    } catch (error) {
+      console.error('Error updating alerts setting:', error);
+      setError('Failed to update notification settings');
+      // Revert the toggle if update fails
+      setUserSettings((prevSettings) => ({ ...prevSettings, notifications: !value }));
     } finally {
       setLoading(false);
     }
-  };
-
-  const handleAlertsToggle = async () => {
-    try {
-      const newAlertsEnabled = !alertsEnabled;
-      await updateDoc(doc(db, 'users', user.uid), {
-        alertsEnabled: newAlertsEnabled,
-      });
-      setAlertsEnabled(newAlertsEnabled);
-    } catch (error) {
-      console.error('Error updating alerts setting:', error);
-      Alert.alert('Error', 'Failed to update alerts preference');
-    }
-  };
-
-  const handleSignOut = () => {
-    Alert.alert(
-      'Sign Out',
-      'Are you sure you want to sign out?',
-      [
-        {
-          text: 'Cancel',
-          style: 'cancel',
-        },
-        {
-          text: 'Sign Out',
-          onPress: signOut,
-          style: 'destructive',
-        },
-      ]
-    );
   };
 
   const handleSupport = () => {
@@ -92,220 +330,147 @@ const SettingsScreen = () => {
     Linking.openURL('https://aquasweeper.com/manual');
   };
 
-  const handlePasswordReset = async () => {
-    try {
-      await sendPasswordResetEmail(auth, user.email);
-      Alert.alert(
-        'Password Reset Email Sent',
-        'Check your email for instructions to reset your password.',
-        [{ text: 'OK' }]
-      );
-    } catch (error) {
-      Alert.alert(
-        'Error',
-        'Failed to send password reset email. Please try again.',
-        [{ text: 'OK' }]
-      );
-    }
-  };
+  const renderDeviceSection = () => (
+    <View style={styles.section}>
+      <View style={styles.sectionHeader}>
+        <Text style={[styles.sectionTitle, { color: theme.text }]}>Connected Devices</Text>
+        <TouchableOpacity onPress={handleAddDevice}>
+          <MaterialCommunityIcons name="plus" size={24} color={theme.primary} />
+        </TouchableOpacity>
+      </View>
+      <View style={[styles.card, { backgroundColor: theme.surface }]}>
+        {devices.length > 0 ? (
+          devices.map((device) => (
+            <DeviceItem
+              key={device.macAddress} // Using MAC address as a unique key
+              device={device}
+              onPress={() => navigation.navigate('DeviceDetails', { device, userId: user.uid })}
+            />
+          ))
+        ) : (
+          <Text style={[styles.emptyText, { color: theme.textSecondary }]}>
+            No devices connected
+          </Text>
+        )}
+      </View>
+    </View>
+  );
 
-  const formatDate = (date) => {
-    return new Date(date).toLocaleDateString('en-US', {
-      year: 'numeric',
-      month: 'long',
-      day: 'numeric',
-    });
-  };
+  const renderProfileSection = () => (
+    <View style={styles.section}>
+      <View style={[styles.card, { backgroundColor: theme.surface }]}>
+        <View style={styles.profileHeader}>
+          <View style={styles.profileMain}>
+            <MaterialCommunityIcons name="account-circle" size={60} color={theme.textSecondary} />
+            <View style={styles.profileInfo}>
+              {userProfile && (
+                <Text style={[styles.userName, { color: theme.text }]}>
+                  {userProfile.firstName} {userProfile.lastName}
+                </Text>
+              )}
+              <Text style={[styles.userEmail, { color: theme.textSecondary }]}>
+                Member since {new Date(user?.metadata?.creationTime).toLocaleDateString()}
+              </Text>
+              <Text style={[styles.userEmail, { color: theme.textSecondary }]}>
+                {user?.email}
+              </Text>
+            </View>
+          </View>
+          <TouchableOpacity
+            onPress={handleSignOut}
+            style={styles.signOutIcon}
+          >
+            <MaterialCommunityIcons name="logout" size={24} color={theme.error} />
+          </TouchableOpacity>
+        </View>
 
-  const handleAutoUpdateToggle = async () => {
-    try {
-      await updateDoc(doc(db, 'users', user.uid), {
-        autoUpdate: !userSettings.autoUpdate,
-      });
-      setUserSettings({ ...userSettings, autoUpdate: !userSettings.autoUpdate });
-    } catch (error) {
-      console.error('Error updating auto-update setting:', error);
-      Alert.alert('Error', 'Failed to update auto-update preference');
-    }
-  };
+        <View style={styles.profileActions}>
+          <TouchableOpacity 
+            style={styles.resetPasswordButton} 
+            onPress={handleResetPassword}
+          >
+            <MaterialCommunityIcons name="lock-reset" size={20} color={theme.primary} />
+            <Text style={[styles.resetPasswordText, { color: theme.text }]}>
+              Reset Password
+            </Text>
+            <MaterialCommunityIcons name="chevron-right" size={20} color={theme.textSecondary} />
+          </TouchableOpacity>
+        </View>
+      </View>
+    </View>
+  );
+
+  const renderPreferenceItem = (label, value, onValueChange) => (
+    <View style={styles.preferenceItem}>
+      <Text style={[styles.preferenceText, { color: theme.text }]}>{label}</Text>
+      <Switch
+        value={value}
+        onValueChange={onValueChange}
+        trackColor={{ false: '#767577', true: theme.primary }}
+        thumbColor="#ffffff"
+        ios_backgroundColor="#3e3e3e"
+      />
+    </View>
+  );
+
+  const renderSupportItem = (title, onPress) => (
+    <TouchableOpacity 
+      style={styles.supportItem} 
+      onPress={onPress}
+    >
+      <View style={styles.supportInfo}>
+        <MaterialCommunityIcons 
+          name={title === 'User Manual' ? 'book-open-page-variant' : 'help-circle'} 
+          size={24} 
+          color={theme.primary} 
+        />
+        <Text style={[styles.supportText, { color: theme.text }]}>{title}</Text>
+      </View>
+      <MaterialCommunityIcons name="chevron-right" size={24} color={theme.textSecondary} />
+    </TouchableOpacity>
+  );
 
   if (loading) {
     return (
-      <View style={[styles.loadingContainer, { backgroundColor: theme.background }]}>
+      <View style={[styles.container, { backgroundColor: theme.background }]}>
         <ActivityIndicator size="large" color={theme.primary} />
       </View>
     );
   }
 
+  if (error) {
+    return (
+      <View style={[styles.container, { backgroundColor: theme.background }]}>
+        <Text style={[styles.errorText, { color: theme.error }]}>Error: {error}</Text>
+      </View>
+    );
+  }
+
   return (
-    <SafeAreaView style={[styles.container, { backgroundColor: theme.background }]}>
-      <ScrollView contentContainerStyle={styles.content}>
-        {/* User Profile Section */}
-        <View style={[styles.section, { backgroundColor: theme.surface, borderColor: theme.border }]}>
-          <View style={styles.profileHeader}>
-            {userSettings?.profilePicture ? (
-              <Image
-                source={{ uri: userSettings.profilePicture }}
-                style={styles.profileImage}
-              />
-            ) : (
-              <MaterialCommunityIcons name="account-circle" size={60} color={theme.textSecondary} />
-            )}
-            <View style={styles.profileInfo}>
-              <Text style={[styles.userName, { color: theme.text }]}>{userSettings?.name || 'User'}</Text>
-              <Text style={[styles.userEmail, { color: theme.textSecondary }]}>{user.email}</Text>
-            </View>
-          </View>
-          <TouchableOpacity 
-            style={styles.settingItem} 
-            onPress={handlePasswordReset}
-          >
-            <View style={styles.settingLeft}>
-              <MaterialCommunityIcons name="lock-reset" size={24} color={theme.primary} />
-              <Text style={[styles.settingText, { color: theme.text }]}>Reset Password</Text>
-            </View>
-            <MaterialCommunityIcons name="chevron-right" size={24} color={theme.textSecondary} />
-          </TouchableOpacity>
-        </View>
-
-        {/* Connected Devices Section */}
-        <View style={[styles.section, { backgroundColor: theme.surface, borderColor: theme.border }]}>
-          <View style={styles.sectionHeader}>
-            <MaterialCommunityIcons name="devices" size={24} color={theme.primary} />
-            <Text style={[styles.sectionTitle, { color: theme.text }]}>Connected Devices</Text>
-          </View>
-          <View style={styles.deviceItem}>
-            <View style={styles.deviceInfo}>
-              <Text style={[styles.deviceName, { color: theme.text }]}>{mockDevice.name}</Text>
-              <Text style={[styles.deviceId, { color: theme.textSecondary }]}>ID: {mockDevice.id}</Text>
-              <View style={styles.deviceStatus}>
-                <View style={[styles.statusDot, { backgroundColor: theme.success }]} />
-                <Text style={[styles.statusText, { color: theme.textSecondary }]}>
-                  {mockDevice.status} • Last synced {formatDate(mockDevice.lastSync)}
-                </Text>
-              </View>
-            </View>
-          </View>
-          {userSettings?.connectedDevices?.map((device) => (
-            <View key={device.deviceId} style={styles.deviceItem}>
-              <View style={styles.deviceInfo}>
-                <Text style={[styles.deviceName, { color: theme.text }]}>{device.deviceName}</Text>
-                <Text style={[styles.deviceId, { color: theme.textSecondary }]}>ID: {device.deviceId}</Text>
-                <View style={styles.deviceStatus}>
-                  <View style={[styles.statusDot, { backgroundColor: theme.success }]} />
-                  <Text style={[styles.statusText, { color: theme.textSecondary }]}>
-                    Connected • Last synced {formatDate(device.addedAt)}
-                  </Text>
-                </View>
-              </View>
-            </View>
-          ))}
-        </View>
-
+    <ScrollView style={[styles.container, { backgroundColor: theme.background }]}>
+      <View style={styles.content}>
+        {renderProfileSection()}
+        {renderDeviceSection()}
+        
         {/* Preferences Section */}
-        <View style={[styles.section, { backgroundColor: theme.surface, borderColor: theme.border }]}>
-          <View style={styles.sectionHeader}>
-            <MaterialCommunityIcons name="cog" size={24} color={theme.primary} />
-            <Text style={[styles.sectionTitle, { color: theme.text }]}>Preferences</Text>
-          </View>
-          
-          <View style={styles.settingItem}>
-            <View style={styles.settingLeft}>
-              <MaterialCommunityIcons name="theme-light-dark" size={24} color={theme.textSecondary} />
-              <Text style={[styles.settingText, { color: theme.text }]}>Dark Mode</Text>
-            </View>
-            <Switch
-              value={isDarkMode}
-              onValueChange={toggleTheme}
-              trackColor={{ false: '#767577', true: theme.primary }}
-              thumbColor={'#fff'}
-              ios_backgroundColor="#767577"
-            />
-          </View>
-
-          <View style={styles.settingItem}>
-            <View style={styles.settingLeft}>
-              <MaterialCommunityIcons name="bell" size={24} color={theme.textSecondary} />
-              <Text style={[styles.settingText, { color: theme.text }]}>Notifications</Text>
-            </View>
-            <Switch
-              value={alertsEnabled}
-              onValueChange={handleAlertsToggle}
-              trackColor={{ false: '#767577', true: theme.primary }}
-              thumbColor={'#fff'}
-              ios_backgroundColor="#767577"
-            />
-          </View>
-
-          <View style={styles.settingItem}>
-            <View style={styles.settingLeft}>
-              <MaterialCommunityIcons name="update" size={24} color={theme.textSecondary} />
-              <Text style={[styles.settingText, { color: theme.text }]}>Auto-Update</Text>
-            </View>
-            <Switch
-              value={userSettings?.autoUpdate}
-              onValueChange={handleAutoUpdateToggle}
-              trackColor={{ false: '#767577', true: theme.primary }}
-              thumbColor={'#fff'}
-              ios_backgroundColor="#767577"
-            />
+        <View style={styles.section}>
+          <Text style={[styles.sectionTitle, { color: theme.text }]}>Preferences</Text>
+          <View style={[styles.card, { backgroundColor: theme.surface }]}>
+            {renderPreferenceItem('Dark Mode', isDarkMode, toggleTheme)}
+            {renderPreferenceItem('Notifications', userSettings?.notifications ?? true, handleToggleAlerts)}
           </View>
         </View>
 
         {/* Support Section */}
-        <View style={[styles.section, { backgroundColor: theme.surface, borderColor: theme.border }]}>
-          <TouchableOpacity style={styles.settingItem} onPress={handleSupport}>
-            <View style={styles.settingLeft}>
-              <MaterialCommunityIcons name="email" size={24} color={theme.primary} />
-              <Text style={[styles.settingText, { color: theme.text }]}>Contact Support</Text>
-            </View>
-            <MaterialCommunityIcons name="chevron-right" size={24} color={theme.textSecondary} />
-          </TouchableOpacity>
-
-          <TouchableOpacity style={styles.settingItem} onPress={handleManual}>
-            <View style={styles.settingLeft}>
-              <MaterialCommunityIcons name="book-open-page-variant" size={24} color={theme.primary} />
-              <Text style={[styles.settingText, { color: theme.text }]}>User Manual</Text>
-            </View>
-            <MaterialCommunityIcons name="chevron-right" size={24} color={theme.textSecondary} />
-          </TouchableOpacity>
-        </View>
-
-        {/* Account Section */}
-        <View style={[styles.section, { backgroundColor: theme.surface, borderColor: theme.border }]}>
-          <TouchableOpacity 
-            style={styles.settingItem} 
-            onPress={handleSignOut}
-          >
-            <View style={styles.settingLeft}>
-              <MaterialCommunityIcons name="logout" size={24} color={theme.error} />
-              <Text style={[styles.settingText, { color: theme.error }]}>Sign Out</Text>
-            </View>
-          </TouchableOpacity>
-        </View>
-
-        {/* App Info Section */}
-        <View style={[styles.section, { backgroundColor: theme.surface, borderColor: theme.border }]}>
-          <View style={styles.sectionHeader}>
-            <MaterialCommunityIcons name="information" size={24} color={theme.primary} />
-            <Text style={[styles.sectionTitle, { color: theme.text }]}>App Info</Text>
-          </View>
-          <View style={styles.settingItem}>
-            <View style={styles.settingLeft}>
-              <MaterialCommunityIcons name="tag" size={24} color={theme.textSecondary} />
-              <Text style={[styles.settingText, { color: theme.text }]}>Version</Text>
-            </View>
-            <Text style={[styles.settingValue, { color: theme.textSecondary }]}>1.0.0</Text>
-          </View>
-          <View style={styles.settingItem}>
-            <View style={styles.settingLeft}>
-              <MaterialCommunityIcons name="copyright" size={24} color={theme.textSecondary} />
-              <Text style={[styles.settingText, { color: theme.text }]}> 2025 AquaSweeper</Text>
-            </View>
+        <View style={styles.section}>
+          <Text style={[styles.sectionTitle, { color: theme.text }]}>Support</Text>
+          <View style={[styles.card, { backgroundColor: theme.surface }]}>
+            {renderSupportItem('User Manual', handleManual)}
+            {renderSupportItem('Contact Support', handleSupport)}
           </View>
         </View>
-      </ScrollView>
-    </SafeAreaView>
+      </View>
+    </ScrollView>
   );
 };
 
@@ -316,97 +481,120 @@ const styles = StyleSheet.create({
   content: {
     padding: 16,
   },
-  loadingContainer: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
   section: {
-    borderRadius: 12,
-    marginBottom: 16,
-    borderWidth: 1,
-    overflow: 'hidden',
-  },
-  lastSection: {
-    borderBottomWidth: 0,
-    paddingBottom: 32,
-  },
-  sectionHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
     padding: 16,
-    borderBottomWidth: 1,
-    borderBottomColor: 'rgba(0,0,0,0.1)',
+  },
+  card: {
+    borderRadius: 12,
+    padding: 16,
+    shadowColor: '#000',
+    shadowOffset: {
+      width: 0,
+      height: 2,
+    },
+    shadowOpacity: 0.25,
+    shadowRadius: 3.84,
+    elevation: 5,
   },
   sectionTitle: {
     fontSize: 18,
     fontWeight: '600',
-    marginLeft: 12,
+    marginBottom: 12,
   },
   profileHeader: {
-    padding: 16,
-    alignItems: 'center',
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'flex-start',
+    paddingBottom: 16,
     borderBottomWidth: 1,
-    borderBottomColor: 'rgba(0,0,0,0.1)',
+    borderBottomColor: '#e0e0e0',
+  },
+  profileMain: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flex: 1,
   },
   profileInfo: {
+    marginLeft: 16,
+    flex: 1,
+  },
+  signOutIcon: {
+    padding: 8,
+  },
+  profileActions: {
+    marginTop: 16,
+  },
+  resetPasswordButton: {
+    flexDirection: 'row',
     alignItems: 'center',
-    marginTop: 8,
+    paddingVertical: 8,
   },
-  userName: {
-    fontSize: 20,
-    fontWeight: '600',
-    marginBottom: 4,
+  resetPasswordText: {
+    fontSize: 16,
+    marginLeft: 12,
+    flex: 1,
   },
-  userEmail: {
-    fontSize: 14,
+  sectionHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 16,
   },
-  settingItem: {
+  deviceCount: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  deviceCountText: {
+    fontSize: 16,
+    fontWeight: '500',
+  },
+  addDeviceButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    padding: 8,
+    borderRadius: 8,
+    borderWidth: 1,
+  },
+  addDeviceText: {
+    marginLeft: 4,
+    fontSize: 16,
+    fontWeight: '500',
+  },
+  deviceItem: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
     padding: 16,
-    borderBottomWidth: 1,
-    borderBottomColor: 'rgba(0,0,0,0.1)',
-  },
-  settingLeft: {
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  settingText: {
-    fontSize: 16,
-    marginLeft: 12,
-  },
-  settingValue: {
-    fontSize: 16,
-  },
-  deviceItem: {
-    padding: 16,
+    borderRadius: 12,
+    marginBottom: 12,
   },
   deviceInfo: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flex: 1,
+  },
+  deviceTextContainer: {
     marginLeft: 12,
+    flex: 1,
   },
   deviceName: {
     fontSize: 16,
     fontWeight: '600',
     marginBottom: 4,
   },
-  deviceId: {
-    fontSize: 14,
-    marginBottom: 4,
-  },
   deviceStatus: {
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  statusDot: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
-    marginRight: 6,
-  },
-  statusText: {
     fontSize: 14,
+  },
+  statusIndicator: {
+    width: 12,
+    height: 12,
+    borderRadius: 6,
+    marginRight: 8,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 0 },
+    shadowOpacity: 0.3,
+    shadowRadius: 4,
+    elevation: 3,
   },
   preferenceItem: {
     flexDirection: 'row',
@@ -414,25 +602,74 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     paddingVertical: 12,
   },
-  preferenceLeft: {
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
   preferenceText: {
     fontSize: 16,
-    marginLeft: 12,
   },
-  infoItem: {
+  supportItem: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    paddingVertical: 8,
+    paddingVertical: 12,
   },
-  infoLabel: {
-    fontSize: 14,
+  supportInfo: {
+    flexDirection: 'row',
+    alignItems: 'center',
   },
-  infoValue: {
-    fontSize: 14,
+  supportText: {
+    fontSize: 16,
+    marginLeft: 12,
+  },
+  accountActionButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+    borderBottomWidth: 1,
+    borderBottomColor: '#e0e0e0',
+  },
+  accountActionContent: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  accountActionText: {
+    fontSize: 16,
+    marginLeft: 12,
+  },
+  signOutButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+    borderRadius: 25,
+  },
+  signOutText: {
+    color: '#fff',
+    fontSize: 16,
+    marginLeft: 12,
+    fontWeight: '500',
+  },
+  errorText: {
+    fontSize: 16,
+    textAlign: 'center',
+    padding: 16,
+  },
+  emptyDevices: {
+    padding: 16,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  emptyText: {
+    fontSize: 16,
+  },
+  deviceActions: {
+    flexDirection: 'row',
+    justifyContent: 'flex-end',
+    alignItems: 'center',
+  },
+  deviceAction: {
+    padding: 8,
   },
 });
 

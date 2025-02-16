@@ -9,8 +9,8 @@ import {
   FlatList,
 } from 'react-native';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
-import { useTheme } from '../services/ThemeContext';
-import { collection, query, orderBy, getDocs } from 'firebase/firestore';
+import { useTheme } from '../theme/ThemeContext';
+import { collection, query, orderBy, getDocs, doc, setDoc, addDoc } from 'firebase/firestore';
 import { db } from '../services/firebase';
 import { useAuth } from '../services/AuthContext';
 
@@ -30,14 +30,61 @@ const InformationScreen = () => {
   const [selectedTimeFrame, setSelectedTimeFrame] = useState('week'); // 'week', 'month', 'all'
 
   useEffect(() => {
-    fetchCleaningSessions();
-  }, [selectedTimeFrame]);
+    if (user) {
+      addTestDataIfNeeded();
+      fetchCleaningSessions();
+    }
+  }, [selectedTimeFrame, user]);
+
+  const addTestDataIfNeeded = async () => {
+    try {
+      const userSkimmersRef = collection(db, 'users', user.email, 'skimmers');
+      const skimmersSnapshot = await getDocs(userSkimmersRef);
+
+      if (skimmersSnapshot.empty) {
+        const skimmerRef = doc(userSkimmersRef, 'test-skimmer-1');
+        await setDoc(skimmerRef, {
+          name: 'AquaSweeper Pro',
+          model: 'AS-001',
+          serialNumber: 'AS-001-2023',
+          addedAt: new Date()
+        });
+
+        const sessionsRef = collection(skimmerRef, 'cleaningSessions');
+        const now = new Date();
+        
+        for (let i = 0; i < 5; i++) {
+          const startTime = new Date(now);
+          startTime.setDate(now.getDate() - i);
+          startTime.setHours(9 + i, 0, 0); // Different times each day
+          
+          const endTime = new Date(startTime);
+          endTime.setHours(startTime.getHours() + 2); // 2-hour sessions
+          
+          await addDoc(sessionsRef, {
+            startTime: startTime,
+            endTime: endTime,
+            debrisCollected: Math.floor(Math.random() * 500) + 100, // Random amount between 100-600g
+            areasCovered: ['Main Pool', 'Deep End'],
+            batteryUsed: Math.floor(Math.random() * 20) + 10, // Random between 10-30%
+            status: 'completed'
+          });
+        }
+      }
+    } catch (error) {
+      console.error('Error adding test data:', error);
+    }
+  };
 
   const fetchCleaningSessions = async () => {
+    if (!user) return;
+    
     try {
       setLoading(true);
-      const now = new Date('2025-01-11T03:34:37-05:00');
-      let dateThreshold = new Date('2025-01-11T03:34:37-05:00');
+      console.log('Fetching sessions for user:', user.email); // Debug log
+      
+      const now = new Date();
+      let dateThreshold = new Date();
       
       if (selectedTimeFrame === 'week') {
         dateThreshold.setDate(now.getDate() - 7);
@@ -45,23 +92,37 @@ const InformationScreen = () => {
         dateThreshold.setMonth(now.getMonth() - 1);
       }
 
-      const sessionsRef = collection(db, 'cleaning_sessions');
-      const q = query(sessionsRef, orderBy('startTime', 'desc'));
-      const querySnapshot = await getDocs(q);
+      const userSkimmersRef = collection(db, 'users', user.email, 'skimmers');
+      const userSkimmersSnapshot = await getDocs(userSkimmersRef);
+      
+      console.log('Found skimmers:', userSkimmersSnapshot.size); // Debug log
       
       const sessions = [];
-      querySnapshot.forEach((doc) => {
-        const data = doc.data();
-        if (selectedTimeFrame === 'all' || new Date(data.startTime.toDate()) >= dateThreshold) {
-          sessions.push({
-            id: doc.id,
-            ...data,
-            startTime: data.startTime.toDate(),
-            endTime: data.endTime.toDate(),
-          });
-        }
-      });
       
+      for (const skimmerDoc of userSkimmersSnapshot.docs) {
+        console.log('Fetching sessions for skimmer:', skimmerDoc.id); // Debug log
+        
+        const sessionsRef = collection(skimmerDoc.ref, 'cleaningSessions');
+        const q = query(sessionsRef, orderBy('startTime', 'desc'));
+        const querySnapshot = await getDocs(q);
+        
+        console.log('Found sessions:', querySnapshot.size); // Debug log
+        
+        querySnapshot.forEach((doc) => {
+          const data = doc.data();
+          if (selectedTimeFrame === 'all' || new Date(data.startTime.toDate()) >= dateThreshold) {
+            sessions.push({
+              id: doc.id,
+              skimmerId: skimmerDoc.id,
+              ...data,
+              startTime: data.startTime.toDate(),
+              endTime: data.endTime.toDate(),
+            });
+          }
+        });
+      }
+      
+      sessions.sort((a, b) => b.startTime - a.startTime);
       setCleaningSessions(sessions);
     } catch (error) {
       console.error('Error fetching cleaning sessions:', error);

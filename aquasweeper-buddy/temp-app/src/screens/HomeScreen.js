@@ -9,7 +9,7 @@ import {
   Animated,
 } from 'react-native';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
-import { useTheme } from '../services/ThemeContext';
+import { useTheme } from '../theme/ThemeContext';
 
 const HomeScreen = () => {
   const { theme } = useTheme();

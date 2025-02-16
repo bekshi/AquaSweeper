@@ -1,11 +1,15 @@
-import React, { createContext, useContext, useState } from 'react';
+import React, { createContext, useContext, useState, useCallback } from 'react';
 
 const ThemeContext = createContext();
 
 export const ThemeProvider = ({ children }) => {
   const [isDarkMode, setIsDarkMode] = useState(false);
 
-  const theme = {
+  const updateTheme = useCallback((value) => {
+    setIsDarkMode(value);
+  }, []);
+
+  const themes = {
     dark: {
       background: '#1a1a1a',
       surface: '#2d2d2d',
@@ -16,6 +20,7 @@ export const ThemeProvider = ({ children }) => {
       accent: '#FF9500',
       error: '#FF3B30',
       success: '#4CAF50',
+      cardBackground: '#2d2d2d',
     },
     light: {
       background: '#ffffff',
@@ -27,17 +32,14 @@ export const ThemeProvider = ({ children }) => {
       accent: '#FF9500',
       error: '#FF3B30',
       success: '#4CAF50',
+      cardBackground: '#ffffff',
     },
   };
 
-  const toggleTheme = () => {
-    setIsDarkMode(prev => !prev);
-  };
-
-  const currentTheme = isDarkMode ? theme.dark : theme.light;
+  const theme = isDarkMode ? themes.dark : themes.light;
 
   return (
-    <ThemeContext.Provider value={{ isDarkMode, toggleTheme, theme: currentTheme }}>
+    <ThemeContext.Provider value={{ isDarkMode, setIsDarkMode: updateTheme, theme }}>
       {children}
     </ThemeContext.Provider>
   );
