@@ -20,8 +20,12 @@
       "infoPlist": {
         "NSLocationWhenInUseUsageDescription": "AquaSweeper needs access to location to scan for nearby devices",
         "NSLocationAlwaysAndWhenInUseUsageDescription": "AquaSweeper needs access to location to scan for nearby devices",
+        "NSLocalNetworkUsageDescription": "AquaSweeper needs access to your local network to connect to your device",
+        "NSBonjourServices": ["_http._tcp"],
+        "LSApplicationQueriesSchemes": ["prefs", "App-prefs"],
         "UIBackgroundModes": [
-          "location"
+          "location",
+          "fetch"
         ]
       }
     },

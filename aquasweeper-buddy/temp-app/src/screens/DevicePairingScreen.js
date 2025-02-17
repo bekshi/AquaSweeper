@@ -1,965 +1,652 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import {
   View,
   Text,
   StyleSheet,
-  Alert,
-  Linking,
-  Platform,
   TouchableOpacity,
-  TextInput,
+  ActivityIndicator,
+  Alert,
+  Platform,
   ScrollView,
-  KeyboardAvoidingView,
-  ActivityIndicator
+  TextInput,
+  Linking
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import NetInfo from '@react-native-community/netinfo';
-import { useTheme } from '../theme/ThemeContext';
-import { useAuth } from '../services/AuthContext';
 import { MaterialIcons } from '@expo/vector-icons';
-import { doc, updateDoc, arrayUnion } from 'firebase/firestore';
 import { db } from '../services/firebase';
+import { doc, updateDoc, arrayUnion, getDoc } from 'firebase/firestore';
+import { useAuth } from '../services/AuthContext';
 
-const WIFI_CONFIG_STORAGE_KEY = '@aquasweeper_wifi_config';
-const ESP_SSID_PREFIX = 'AquaSweeper-';
-const ESP_CONFIG_URL = 'http://192.168.4.1';
+const AQUASWEEPER_AP_PREFIX = 'AquaSweeper';
+const DEVICE_IP = '192.168.4.1';
 
 const DevicePairingScreen = ({ navigation }) => {
-  const { theme } = useTheme();
   const { user } = useAuth();
   const [currentStep, setCurrentStep] = useState(0);
   const [homeWifiSSID, setHomeWifiSSID] = useState('');
   const [homeWifiPassword, setHomeWifiPassword] = useState('');
   const [isConfiguring, setIsConfiguring] = useState(false);
-  const [isConnectedToESP32, setIsConnectedToESP32] = useState(false);
-  const [manuallyConnected, setManuallyConnected] = useState(false);
   const [isVerifying, setIsVerifying] = useState(false);
-  const [isScanning, setIsScanning] = useState(false);
-  const [config, setConfig] = useState(null);
+  const [connectionError, setConnectionError] = useState('');
+  const [deviceStatus, setDeviceStatus] = useState(null);
+  const [connectedToAquaSweeper, setConnectedToAquaSweeper] = useState(false);
+  const [showingWifiSettings, setShowingWifiSettings] = useState(false);
 
-  const ESP32_IP = '192.168.4.1';
-  const ESP32_STATUS_URL = `http://${ESP32_IP}/status`;
-
-  // Store WiFi credentials for when we reconnect to dev server
-  const saveWifiConfig = async () => {
+  const saveWiFiCredentials = async () => {
     try {
-      const config = {
-        ssid: homeWifiSSID,
-        password: homeWifiPassword,
-        timestamp: new Date().toISOString(),
-      };
-      await AsyncStorage.setItem(WIFI_CONFIG_STORAGE_KEY, JSON.stringify(config));
+      await AsyncStorage.setItem('HOME_WIFI_SSID', homeWifiSSID);
+      await AsyncStorage.setItem('HOME_WIFI_PASSWORD', homeWifiPassword);
       return true;
     } catch (error) {
-      console.error('Error saving WiFi config:', error);
+      setConnectionError('Failed to save WiFi credentials');
       return false;
     }
   };
 
-  // Check if we have pending configuration from before network switch
-  const checkPendingConfig = async () => {
+  const validateAquaSweeperConnection = async () => {
+    setIsVerifying(true);
+    setConnectionError('');
+    console.log('Starting AquaSweeper validation...');
+
     try {
-      const configStr = await AsyncStorage.getItem(WIFI_CONFIG_STORAGE_KEY);
-      if (configStr) {
-        const config = JSON.parse(configStr);
-        const configTime = new Date(config.timestamp);
-        const now = new Date();
-        // Only use config if it's less than 5 minutes old
-        if (now.getTime() - configTime.getTime() < 5 * 60 * 1000) {
-          setHomeWifiSSID(config.ssid);
-          setHomeWifiPassword(config.password);
-          return true;
-        }
-        // Clear old config
-        await AsyncStorage.removeItem(WIFI_CONFIG_STORAGE_KEY);
-      }
-    } catch (error) {
-      console.error('Error checking pending config:', error);
-    }
-    return false;
-  };
-
-  useEffect(() => {
-    checkPendingConfig();
-  }, []);
-
-  useEffect(() => {
-    console.log('Current step:', currentStep);
-    console.log('Is connected to ESP32:', isConnectedToESP32);
-  }, [currentStep, isConnectedToESP32]);
-
-  const steps = [
-    {
-      title: 'Enter Home WiFi Details',
-      description: 'Enter your home WiFi 2.4GHz network details. These will be used to configure your AquaSweeper device.',
-      action: 'Save WiFi Details',
-      icon: 'wifi'
-    },
-    {
-      title: 'Connect to AquaSweeper',
-      description: `1. Open WiFi settings and connect to "AquaSweeper-XXXX" network (password: 12345678)\n2. Once connected, tap "I'm Connected" below\n3. Then tap "Configure Device" to send WiFi details`,
-      action: manuallyConnected ? 'Configure Device' : "I'm Connected",
-      icon: 'settings-input-antenna'
-    },
-    {
-      title: 'Verify Connection',
-      description: 'Verify that your AquaSweeper device has connected to your home network successfully.',
-      action: 'Verify Connection',
-      icon: 'check-circle'
-    }
-  ];
-
-  const checkESP32Connection = async () => {
-    try {
-      const netInfo = await NetInfo.fetch();
-      console.log('Current network:', netInfo);
-      console.log('SSID:', netInfo.details?.ssid);
+      console.log('Attempting to connect to device at:', DEVICE_IP);
       
-      // Check if connected to AquaSweeper network
-      if (netInfo.type === 'wifi' && netInfo.details?.ssid?.includes('AquaSweeper')) {
-        console.log('✅ Connected to AquaSweeper network');
-        setIsConnectedToESP32(true);
-        return true;
-      }
-      
-      console.log('❌ Not connected to AquaSweeper network');
-      setIsConnectedToESP32(false);
-      return false;
-    } catch (error) {
-      console.log('❌ Network check error:', error);
-      setIsConnectedToESP32(false);
-      return false;
-    }
-  };
-
-  useEffect(() => {
-    let mounted = true;
-    let checkInterval;
-
-    const startChecking = async () => {
-      if (currentStep === 1 && mounted) {
-        console.log('Starting network checks...');
-        
-        // Initial check
-        await checkESP32Connection();
-        
-        // Start periodic checks
-        checkInterval = setInterval(async () => {
-          if (mounted) {
-            await checkESP32Connection();
-          }
-        }, 3000);
-      } else {
-        setIsConnectedToESP32(false);
-      }
-    };
-
-    startChecking();
-
-    return () => {
-      mounted = false;
-      if (checkInterval) {
-        clearInterval(checkInterval);
-      }
-    };
-  }, [currentStep]);
-
-  // Function to scan for networks
-  const scanNetworks = async () => {
-    try {
-      const response = await fetch(`${ESP_CONFIG_URL}/scan`);
-      if (!response.ok) {
-        throw new Error('Network scan failed');
-      }
-      const networks = await response.json();
-      return networks;
-    } catch (error) {
-      console.error('Error scanning networks:', error);
-      return null;
-    }
-  };
-
-  // Function to verify network exists
-  const verifyNetwork = async (ssid) => {
-    const networks = await scanNetworks();
-    if (!networks) {
-      return false;
-    }
-    return networks.some(network => network.ssid === ssid);
-  };
-
-  const configureDevice = async (config, retryCount = 0) => {
-    const maxRetries = 3;
-    const baseDelay = 1000; // 1 second
-
-    try {
-      // First try to get device status
-      console.log(`Attempt ${retryCount + 1}: Getting device status...`);
-      try {
-        const statusResponse = await fetch('http://192.168.4.1/status', {
-          method: 'GET',
-          headers: {
-            'Accept': 'application/json',
-          },
-          timeout: 5000 // 5 second timeout for status
-        });
-        console.log('Status response:', statusResponse.status);
-        const statusData = await statusResponse.json();
-        console.log('Status data:', statusData);
-      } catch (error) {
-        console.log('Status check failed (this is normal if device was just reset):', error);
-      }
-
-      // Then send WiFi configuration
-      console.log('Sending config to device:', {
-        ssid: config.ssid,
-        password: config.password ? '********' : undefined
-      });
-      
-      const requestConfig = {
-        method: 'POST',
+      const response = await fetch(`http://${DEVICE_IP}/discover`, {
+        method: 'GET',
         headers: {
-          'Content-Type': 'application/json',
-          'Accept': 'application/json',
+          'Accept': 'application/json'
         },
-        body: JSON.stringify({
-          ssid: config.ssid,
-          password: config.password
-        })
-      };
-      
-      console.log('Request headers:', requestConfig.headers);
-      console.log('Request body:', requestConfig.body);
-      
-      const response = await fetch('http://192.168.4.1/configure', requestConfig);
-
-      console.log('Response status:', response.status);
-      console.log('Response headers:', {
-        type: response.headers.get('content-type'),
-        cors: response.headers.get('access-control-allow-origin'),
+        cache: 'no-store',
+        mode: 'cors',
+        credentials: 'omit',
+        timeout: 3000 // 3 second timeout
       });
+
+      console.log('Device response status:', response.status);
+      console.log('Response headers:', [...response.headers.entries()]);
+
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+
+      const text = await response.text();
+      console.log('Raw response:', text);
 
       let data;
       try {
-        data = JSON.parse(response.headers.get('content-type'));
+        data = JSON.parse(text);
+        console.log('Parsed device response:', data);
       } catch (e) {
-        console.error('Error parsing response:', e);
-        throw new Error(`Invalid response from device: ${response.headers.get('content-type')}`);
+        console.error('JSON parse error:', e);
+        throw new Error('Invalid response format');
       }
 
-      if (response.ok && data.success) {
-        console.log('Configuration successful:', data);
-        // Store device info for verification
-        if (data.deviceId) {
-          await AsyncStorage.setItem('DEVICE_ID', data.deviceId);
-        }
-        return { success: true, data };
-      } else {
-        throw new Error(data.error || data.message || 'Failed to configure device');
+      if (!data.type || data.type !== 'AquaSweeper') {
+        throw new Error('Not an AquaSweeper device');
       }
+
+      setConnectedToAquaSweeper(true);
+      setDeviceStatus(data);
+      setCurrentStep(1);
+      return true;
+
     } catch (error) {
-      console.error(`Configuration attempt ${retryCount + 1} failed:`, error);
-      
-      // If we haven't exceeded max retries, try again with exponential backoff
-      if (retryCount < maxRetries) {
-        const delay = baseDelay * Math.pow(2, retryCount);
-        console.log(`Retrying in ${delay}ms...`);
-        await new Promise(resolve => setTimeout(resolve, delay));
-        return configureDevice(config, retryCount + 1);
-      }
-      
-      throw error;
+      console.error('Validation error:', error.message);
+      setConnectionError(
+        'Could not connect to AquaSweeper device. Please ensure you are connected to the device\'s WiFi network.'
+      );
+      setConnectedToAquaSweeper(false);
+      return false;
+    } finally {
+      setIsVerifying(false);
     }
   };
 
-  const handleStepAction = async (stepIndex) => {
-    console.log('handleStepAction called with step:', stepIndex);
-    
-    switch (stepIndex) {
-      case 0:
-        console.log('Step 0: Handling WiFi details save');
-        handleWifiDetailsSave();
-        break;
-      case 1:
-        console.log('Step 1: Handling device configuration');
-        if (!manuallyConnected) {
-          console.log('Setting manually connected flag...');
-          setManuallyConnected(true);
-        } else {
-          console.log('Configuring device...');
-          const configStr = await AsyncStorage.getItem(WIFI_CONFIG_STORAGE_KEY);
-          if (configStr) {
-            const config = JSON.parse(configStr);
-            setIsConfiguring(true);
-            try {
-              const result = await configureDevice(config);
-              setConfig(config);
-
-              Alert.alert(
-                'Device Configured',
-                'Configuration successful! Now connect back to your home WiFi network and tap "Verify Connection".',
-                [
-                  {
-                    text: 'Open WiFi Settings',
-                    onPress: async () => {
-                      setManuallyConnected(false);
-                      // Wait a moment before opening WiFi settings to ensure device has time to switch modes
-                      setTimeout(async () => {
-                        await openWiFiSettings();
-                        setCurrentStep(2);
-                      }, 2000);
-                    }
-                  }
-                ]
-              );
-            } catch (error) {
-              console.error('Configuration error:', error);
-              Alert.alert(
-                'Error',
-                `Failed to configure device: ${error.message}. Please make sure you're connected to the AquaSweeper network and try again.`
-              );
-            } finally {
-              setIsConfiguring(false);
-            }
-          }
-        }
-        break;
-      case 2:
-        console.log('Step 2: Verifying connection...');
-        await verifyDeviceConnection();
-        break;
-      default:
-        console.log('Unknown step:', stepIndex);
-    }
-  };
-
-  const findDeviceOnNetwork = async () => {
-    console.log('Starting device discovery...');
-    
-    const deviceId = await AsyncStorage.getItem('DEVICE_ID');
-    console.log('Stored device ID:', deviceId);
-    
-    if (!deviceId) {
-      throw new Error('No device ID stored. Please reconfigure the device.');
-    }
-
-    // Wait for WiFi to reconnect to home network
-    console.log('Waiting for WiFi reconnection...');
-    await new Promise(resolve => setTimeout(resolve, 5000));
-
-    try {
-      // Method 1: Try mDNS hostname
-      const hostname = `aquasweeper-${deviceId.toLowerCase()}`;
-      console.log('Trying hostname:', hostname);
+  const openWiFiSettings = async () => {
+    if (Platform.OS === 'ios') {
       try {
-        const response = await fetch(`http://${hostname}.local/status`);
-        if (response.ok) {
-          const status = await response.json();
-          console.log('Device status via hostname:', status);
-          if (status.device_id?.toLowerCase() === deviceId.toLowerCase()) {
-            console.log('Found device via hostname!');
-            return status;
-          }
-        }
+        await Linking.openURL('App-prefs:root=WIFI');
       } catch (error) {
-        console.log('Hostname lookup failed:', error);
-      }
-
-      // Method 2: Scan common IP addresses
-      console.log('Scanning common IPs...');
-      const commonIPs = [
-        '192.168.1.', 
-        '192.168.0.',
-        '10.0.0.'
-      ];
-
-      for (const baseIP of commonIPs) {
-        for (let i = 2; i <= 20; i++) {
-          const ip = baseIP + i;
-          console.log('Trying IP:', ip);
-          try {
-            const response = await fetch(`http://${ip}/status`, { 
-              timeout: 1000
-            });
-            if (response.ok) {
-              const status = await response.json();
-              console.log('Got status from', ip, ':', status);
-              if (status.device_id?.toLowerCase() === deviceId.toLowerCase()) {
-                console.log('Found device at IP:', ip);
-                return status;
-              }
-            }
-          } catch (error) {
-            // Ignore timeouts and continue
-          }
+        try {
+          await Linking.openURL('prefs:root=WIFI');
+        } catch (error) {
+          console.error('Could not open WiFi settings:', error);
+          await Linking.openSettings();
         }
       }
-
-      throw new Error('Device not found on network');
-    } catch (error) {
-      console.error('Error finding device:', error);
-      throw error;
+    } else {
+      await Linking.sendIntent('android.settings.WIFI_SETTINGS');
     }
   };
 
-  const verifyDeviceConnection = async () => {
-    setIsVerifying(true);
-    let attempts = 0;
-    const maxAttempts = 10; // Try for about 50 seconds total
-    
-    const attemptVerification = async () => {
-      try {
-        // Wait for network to be ready
-        const netInfo = await NetInfo.fetch();
-        if (netInfo.type !== 'wifi' || !netInfo.isConnected) {
-          console.log('Not connected to WiFi:', netInfo);
-          throw new Error('Please connect to your home WiFi network');
-        }
-
-        // Try to get device info using stored configuration
-        const configStr = await AsyncStorage.getItem(WIFI_CONFIG_STORAGE_KEY);
-        if (!configStr) {
-          throw new Error('No device configuration found');
-        }
-        const config = JSON.parse(configStr);
-
-        // Get device MAC address from previous configuration
-        const deviceResponse = await fetch('http://192.168.4.1/getDeviceInfo', {
-          method: 'GET',
-          headers: {
-            'Accept': 'application/json',
-          },
-          timeout: 5000
-        });
-
-        if (!deviceResponse.ok) {
-          throw new Error('Could not get device information');
-        }
-
-        const deviceInfo = await deviceResponse.json();
-        console.log('Device info:', deviceInfo);
-
-        if (!deviceInfo.isConnected) {
-          throw new Error('Device is not connected to WiFi network');
-        }
-
-        if (deviceInfo.wifiSSID !== config.ssid) {
-          throw new Error(`Device is connected to wrong network. Expected: ${config.ssid}, Got: ${deviceInfo.wifiSSID}`);
-        }
-
-        // Store device in Firestore
-        if (user?.uid) {
-          const userRef = doc(db, 'users', user.uid);
-          await updateDoc(userRef, {
-            'settings.devices': arrayUnion({
-              id: deviceInfo.deviceId,
-              name: deviceInfo.name,
-              macAddress: deviceInfo.macAddress,
-              ipAddress: deviceInfo.ipAddress,
-              dateAdded: new Date().toISOString(),
-              lastSeen: new Date().toISOString(),
-              isConnected: true
-            })
-          });
-        }
-
-        Alert.alert(
-          'Success!',
-          'Device successfully connected to your network!',
-          [
-            {
-              text: 'OK',
-              onPress: () => navigation.replace('MainHome')
-            }
-          ]
-        );
-        return true;
-      } catch (error) {
-        console.log(`Verification attempt ${attempts + 1} failed:`, error);
-        return false;
-      }
-    };
-
-    while (attempts < maxAttempts && !isVerifying) {
-      const success = await attemptVerification();
-      if (success) {
-        setIsVerifying(false);
-        return;
-      }
-      
-      attempts++;
-      if (attempts < maxAttempts) {
-        await new Promise(resolve => setTimeout(resolve, 5000));
-      }
-    }
-
-    setIsVerifying(false);
-    Alert.alert(
-      'Connection Failed',
-      'Could not verify the device connection. Please make sure:\n\n' +
-      '1. You are connected to your home WiFi network\n' +
-      '2. The device LED is solid (not blinking)\n' +
-      '3. You are within range of the device\n\n' +
-      'Would you like to try again?',
-      [
-        {
-          text: 'Try Again',
-          onPress: () => verifyDeviceConnection()
-        },
-        {
-          text: 'Cancel',
-          style: 'cancel'
-        }
-      ]
-    );
-  };
-
-  const verifyConnection = async () => {
-    setIsVerifying(true);
-    let attempts = 0;
-    const maxAttempts = 6; // Try for 30 seconds (6 attempts * 5 seconds)
-    
-    const attemptVerification = async () => {
-      try {
-        // First quick check with short timeout
-        const quickCheck = await fetch('http://192.168.4.1/status', {
-          method: 'GET',
-          headers: {
-            'Accept': 'application/json',
-          },
-          timeout: 2000 // 2 second timeout
-        });
-
-        if (!quickCheck.ok) {
-          throw new Error('Device not responding');
-        }
-
-        // If quick check passes, get the device info
-        const deviceInfoResponse = await fetch('http://192.168.4.1/info', {
-          method: 'GET',
-          headers: {
-            'Accept': 'application/json',
-          },
-          timeout: 2000
-        });
-
-        if (!deviceInfoResponse.ok) {
-          throw new Error('Could not get device information');
-        }
-
-        const deviceInfo = await deviceInfoResponse.json();
-        console.log('Device found! Status:', deviceInfo);
-        
-        if (!deviceInfo.connected) {
-          throw new Error('Device is not connected to WiFi network');
-        }
-
-        if (deviceInfo.ssid !== config.ssid) {
-          throw new Error(`Device is connected to wrong network. Expected: ${config.ssid}, Got: ${deviceInfo.ssid}`);
-        }
-
-        // Store device in Firestore
-        if (user?.uid) {
-          const userRef = doc(db, 'users', user.uid);
-          const userDoc = await getDoc(userRef);
-          const userData = userDoc.data();
-          
-          // Use settings.devices consistently
-          const devices = userData.settings?.devices || [];
-          
-          // Check if device already exists
-          const deviceIndex = devices.findIndex(d => d.id === deviceInfo.device_id);
-          if (deviceIndex >= 0) {
-            devices[deviceIndex] = { ...devices[deviceIndex], ...deviceInfo };
-          } else {
-            devices.push(deviceInfo);
-          }
-
-          await updateDoc(userRef, {
-            'settings.devices': devices
-          });
-        }
-        
-        Alert.alert(
-          'Success!',
-          'Device successfully connected to your network!',
-          [
-            {
-              text: 'OK',
-              onPress: () => {
-                // Navigate to main home screen with drawer
-                navigation.replace('MainHome');
-              }
-            }
-          ]
-        );
-        return true;
-      } catch (error) {
-        console.log(`Verification attempt ${attempts + 1} failed:`, error);
-        return false;
-      }
-    };
-
-    while (attempts < maxAttempts) {
-      console.log(`Verification attempt ${attempts + 1} of ${maxAttempts}`);
-      const success = await attemptVerification();
-      if (success) {
-        setIsVerifying(false);
-        return;
-      }
-      
-      attempts++;
-      if (attempts < maxAttempts) {
-        console.log('Waiting 5 seconds before next attempt...');
-        await new Promise(resolve => setTimeout(resolve, 5000));
-      }
-    }
-
-    // If we get here, all attempts failed
-    setIsVerifying(false);
-    Alert.alert(
-      'Connection Failed',
-      'Could not find the device on your network after multiple attempts. Make sure:\n\n' +
-      '1. You entered the correct WiFi credentials\n' +
-      '2. Your device is powered on\n' +
-      '3. You are connected to your home WiFi',
-      [
-        {
-          text: 'Try Again',
-          onPress: () => verifyConnection()
-        },
-        {
-          text: 'Cancel'
-        }
-      ]
-    );
-  };
-
-  const handleWifiDetailsSave = async () => {
-    if (!homeWifiSSID || !homeWifiPassword) {
-      Alert.alert('Error', 'Please enter both WiFi name and password');
-      return;
-    }
-
+  const configureWiFi = async () => {
     setIsConfiguring(true);
     try {
-      // Save the WiFi config first
-      await saveWifiConfig();
+      // Get device info first while we know we're connected
+      const deviceInfo = await getDeviceInfo();
       
-      Alert.alert(
-        'Connect to AquaSweeper',
-        'Please follow these steps:\n\n' +
-        '1. Open WiFi settings\n' +
-        '2. Connect to "AquaSweeper-XXXX" network\n' +
-        '3. Stay connected until configuration is complete.\n\n' +
-        'The app will automatically configure the device once connected.',
-        [
-          {
+      // Then configure WiFi
+      const response = await fetch(`http://${DEVICE_IP}/wifi`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ 
+          ssid: homeWifiSSID, 
+          password: homeWifiPassword 
+        }),
+        timeout: 5000 // 5 second timeout
+      });
+
+      if (!response.ok) {
+        throw new Error('Failed to configure WiFi');
+      }
+
+      const data = await response.json();
+      if (data.success) {
+        // Save device info to Firestore
+        const saved = await saveDeviceToFirestore(deviceInfo);
+        if (!saved) {
+          throw new Error('Failed to save device info');
+        }
+
+        setCurrentStep(2);
+        Alert.alert(
+          'Success',
+          'Device configured successfully. Please reconnect to your home network to complete the setup.',
+          [{ 
             text: 'Open WiFi Settings',
-            onPress: async () => {
-              await openWiFiSettings();
-              setCurrentStep(1);
-            }
-          },
-          {
-            text: 'Cancel',
-            style: 'cancel'
-          }
-        ]
-      );
+            onPress: openWiFiSettings
+          }]
+        );
+      } else {
+        throw new Error(data.message || 'Configuration failed');
+      }
     } catch (error) {
-      console.error('Error saving config:', error);
-      Alert.alert('Error', 'Failed to save WiFi configuration. Please try again.');
+      console.error('Configuration error:', error);
+      setConnectionError('Failed to configure device: ' + error.message);
     } finally {
       setIsConfiguring(false);
     }
   };
 
-  const openWiFiSettings = async () => {
+  const verifyHomeNetworkConnection = async () => {
+    setIsVerifying(true);
     try {
-      if (Platform.OS === 'ios') {
-        await Linking.openURL('App-Prefs:root=WIFI');
-      } else {
-        await Linking.sendIntent('android.settings.WIFI_SETTINGS');
-      }
+      Alert.alert(
+        'Setup Complete!',
+        'Your AquaSweeper device has been successfully paired and registered.',
+        [
+          {
+            text: 'Continue',
+            onPress: () => navigation.navigate('MainHome')
+          }
+        ]
+      );
     } catch (error) {
-      console.error('Error opening WiFi settings:', error);
-      Alert.alert('Error', 'Unable to open WiFi settings. Please open them manually.');
+      console.error('Verification error:', error);
+      Alert.alert(
+        'Connection Error',
+        error.message,
+        [
+          {
+            text: 'Try Again',
+            onPress: () => verifyHomeNetworkConnection()
+          }
+        ]
+      );
+    } finally {
+      setIsVerifying(false);
     }
   };
 
-  const renderWiFiForm = () => (
-    <View style={styles.formContainer}>
-      <TextInput
-        style={[styles.input, { 
-          backgroundColor: theme.cardBackground,
-          color: theme.text,
-          borderColor: theme.border
-        }]}
-        placeholder="WiFi Network Name"
-        placeholderTextColor={theme.textSecondary}
-        value={homeWifiSSID}
-        onChangeText={setHomeWifiSSID}
-        autoCapitalize="none"
-      />
-      <TextInput
-        style={[styles.input, { 
-          backgroundColor: theme.cardBackground,
-          color: theme.text,
-          borderColor: theme.border
-        }]}
-        placeholder="WiFi Password"
-        placeholderTextColor={theme.textSecondary}
-        value={homeWifiPassword}
-        onChangeText={setHomeWifiPassword}
-        secureTextEntry
-        autoCapitalize="none"
-      />
-    </View>
-  );
+  const handleStepAction = async (index) => {
+    setConnectionError('');
+
+    switch (index) {
+      case 0: // Save home WiFi credentials
+        if (!homeWifiSSID || !homeWifiPassword) {
+          Alert.alert('Error', 'Please enter both WiFi name and password');
+          return;
+        }
+        if (await saveWiFiCredentials()) {
+          Alert.alert(
+            'WiFi Details Saved',
+            'Now connect to your AquaSweeper device\'s WiFi network. The network name starts with "AquaSweeper-".',
+            [
+              {
+                text: 'Open WiFi Settings',
+                onPress: () => {
+                  setShowingWifiSettings(true);
+                  openWiFiSettings();
+                  setCurrentStep(1);
+                }
+              }
+            ]
+          );
+        }
+        break;
+
+      case 1: // Handle AquaSweeper connection and configuration
+        if (!showingWifiSettings) {
+          // First click: Open WiFi settings
+          setShowingWifiSettings(true);
+          openWiFiSettings();
+        } else if (!connectedToAquaSweeper) {
+          // Second click: Validate connection to AquaSweeper
+          setIsVerifying(true);
+          try {
+            const isConnected = await validateAquaSweeperConnection();
+            if (isConnected) {
+              setConnectedToAquaSweeper(true);
+            }
+          } finally {
+            setIsVerifying(false);
+          }
+        } else {
+          // Third click: Configure AquaSweeper with home network
+          setIsConfiguring(true);
+          try {
+            const response = await fetch(`http://${DEVICE_IP}/wifi`, {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+              },
+              body: JSON.stringify({ 
+                ssid: homeWifiSSID, 
+                password: homeWifiPassword 
+              }),
+              timeout: 5000 // 5 second timeout
+            });
+
+            if (!response.ok) {
+              throw new Error('Failed to configure WiFi');
+            }
+
+            const data = await response.json();
+            if (data.success) {
+              try {
+                // Get device info before it disconnects
+                const deviceInfo = await getDeviceInfo();
+                
+                // Save device info to Firestore
+                const saved = await saveDeviceToFirestore(deviceInfo);
+                if (!saved) {
+                  throw new Error('Failed to save device info');
+                }
+
+                setCurrentStep(2);
+                Alert.alert(
+                  'Success',
+                  'Device configured successfully. Please reconnect to your home network to complete the setup.',
+                  [{ 
+                    text: 'Open WiFi Settings',
+                    onPress: openWiFiSettings
+                  }]
+                );
+              } catch (error) {
+                console.error('Error in final setup:', error);
+                setConnectionError('Device configured but failed to save device info. Please try again.');
+              }
+            } else {
+              throw new Error(data.message || 'Configuration failed');
+            }
+          } catch (error) {
+            console.error('Configuration error:', error);
+            setConnectionError('Failed to configure device: ' + error.message);
+          } finally {
+            setIsConfiguring(false);
+          }
+        }
+        break;
+
+      case 2: // Verify home network connection
+        setIsVerifying(true);
+        try {
+          Alert.alert(
+            'Setup Complete!',
+            'Your AquaSweeper device has been successfully paired and registered.',
+            [
+              {
+                text: 'Continue',
+                onPress: () => navigation.navigate('MainHome')
+              }
+            ]
+          );
+        } catch (error) {
+          console.error('Verification error:', error);
+          Alert.alert(
+            'Connection Error',
+            error.message,
+            [
+              {
+                text: 'Try Again',
+                onPress: () => handleStepAction(2)
+              }
+            ]
+          );
+        } finally {
+          setIsVerifying(false);
+        }
+        break;
+    }
+  };
+
+  const getStep2ButtonText = () => {
+    if (isVerifying) return 'Validating...';
+    if (connectedToAquaSweeper) return 'Configure Device';
+    if (showingWifiSettings) return "I'm Connected";
+    return 'Connect to AquaSweeper';
+  };
+
+  const saveDeviceToFirestore = async (deviceInfo) => {
+    try {
+      const userRef = doc(db, 'users', user.uid);
+      await updateDoc(userRef, {
+        connectedDevices: arrayUnion({
+          ipAddress: deviceInfo.ip,
+          macAddress: deviceInfo.mac,
+          deviceName: deviceInfo.name || `AquaSweeper-${deviceInfo.mac.slice(-6)}`,
+          addedAt: new Date().toISOString()
+        })
+      });
+      return true;
+    } catch (error) {
+      console.error('Error saving device to Firestore:', error);
+      return false;
+    }
+  };
+
+  const getDeviceInfo = async () => {
+    try {
+      const response = await fetch(`http://${DEVICE_IP}/info`, {
+        timeout: 5000 // 5 second timeout
+      });
+      if (!response.ok) {
+        throw new Error('Failed to get device info');
+      }
+      const data = await response.json();
+      return data;
+    } catch (error) {
+      console.error('Error getting device info:', error);
+      throw error;
+    }
+  };
+
+  const steps = [
+    {
+      title: 'Enter Home WiFi Details',
+      description: 'Enter your home WiFi network details. These will be used to connect your AquaSweeper device.',
+      action: () => handleStepAction(0),
+      actionText: 'Save WiFi Details',
+      loadingText: 'Saving...',
+      showWiFiForm: true,
+      icon: 'wifi'
+    },
+    {
+      title: 'Connect to AquaSweeper',
+      description: 'Connect to your AquaSweeper device to configure it:\n\n1. Open WiFi settings\n2. Connect to "AquaSweeper-XXXX" network\n3. Return to this app',
+      action: () => handleStepAction(1),
+      actionText: 'Connect to AquaSweeper',
+      loadingText: isVerifying ? 'Validating...' : 'Configuring...',
+      showSettings: true,
+      icon: 'settings-input-antenna'
+    },
+    {
+      title: 'Complete Setup',
+      description: 'Reconnect to your home network to complete the setup.',
+      action: () => handleStepAction(2),
+      actionText: 'Finish Setup',
+      loadingText: 'Verifying...',
+      showSettings: true,
+      icon: 'check-circle'
+    }
+  ];
 
   const renderStep = (step, index) => {
-    const isActive = index === currentStep;
-    const isCompleted = index < currentStep;
-    const buttonEnabled = isActive && (
-      index === 0 ? (homeWifiSSID && homeWifiPassword) :
-      index === 1 ? !isConfiguring :
-      index === 2 ? !isVerifying :
-      true
-    );
+    const isCurrentStep = currentStep === index;
+    const isCompleted = currentStep > index;
+    const buttonText = index === 1 ? getStep2ButtonText() : step.actionText;
+    const isLoading = (isConfiguring && index === 1) || (isVerifying && (index === 1 || index === 2));
 
     return (
       <View key={index} style={styles.stepContainer}>
         <View style={styles.stepHeader}>
-          <View style={[
-            styles.stepNumber,
-            isActive && { backgroundColor: theme.primary },
-            isCompleted && { backgroundColor: theme.success }
-          ]}>
-            <MaterialIcons
-              name={step.icon}
-              size={24}
-              color={isActive || isCompleted ? '#FFF' : theme.text}
-            />
-          </View>
-          <Text style={[styles.stepTitle, { color: theme.text }]}>{step.title}</Text>
+          <MaterialIcons
+            name={isCompleted ? 'check-circle' : step.icon}
+            size={24}
+            color={isCompleted ? '#4caf50' : isCurrentStep ? '#007AFF' : '#757575'}
+          />
+          <Text style={[styles.stepTitle, isCurrentStep && styles.activeStepTitle]}>
+            {step.title}
+          </Text>
         </View>
-        
-        <Text style={[styles.stepDescription, { color: theme.textSecondary }]}>
-          {step.description}
-        </Text>
 
-        {index === 0 && isActive && renderWiFiForm()}
+        <Text style={styles.stepDescription}>{step.description}</Text>
 
-        <TouchableOpacity
-          style={[
-            styles.actionButton,
-            { backgroundColor: theme.primary },
-            !buttonEnabled && { opacity: 0.5 }
-          ]}
-          onPress={() => handleStepAction(index)}
-          disabled={!buttonEnabled}
-        >
-          {(isConfiguring && index === 1) || (isVerifying && index === 2) ? (
-            <ActivityIndicator color="#FFF" />
-          ) : (
-            <Text style={styles.actionButtonText}>{step.action}</Text>
-          )}
-        </TouchableOpacity>
-
-        {index < steps.length - 1 && (
-          <View style={[styles.stepConnector, { backgroundColor: theme.border }]} />
+        {isCurrentStep && (
+          <View style={styles.inputContainer}>
+            {step.showWiFiForm && (
+              <>
+                <TextInput
+                  style={styles.input}
+                  placeholder="WiFi Network Name (SSID)"
+                  placeholderTextColor="#757575"
+                  value={homeWifiSSID}
+                  onChangeText={setHomeWifiSSID}
+                />
+                <TextInput
+                  style={styles.input}
+                  placeholder="WiFi Password"
+                  placeholderTextColor="#757575"
+                  value={homeWifiPassword}
+                  onChangeText={setHomeWifiPassword}
+                  secureTextEntry
+                />
+              </>
+            )}
+            
+            <TouchableOpacity
+              style={[
+                styles.button,
+                (step.showWiFiForm && (!homeWifiSSID || !homeWifiPassword)) && { opacity: 0.5 }
+              ]}
+              onPress={step.action}
+              disabled={step.showWiFiForm && (!homeWifiSSID || !homeWifiPassword) || isLoading}
+            >
+              {isLoading ? (
+                <ActivityIndicator color="#ffffff" />
+              ) : (
+                <Text style={styles.buttonText}>
+                  {buttonText}
+                </Text>
+              )}
+            </TouchableOpacity>
+          </View>
         )}
       </View>
     );
   };
 
-  const handleConfigureDevice = async () => {
-    try {
-      setIsConfiguring(true);
-      setError(null);
-
-      // Get device info first
-      const deviceInfoResponse = await fetch(`http://${ESP32_IP}/getDeviceInfo`);
-      if (!deviceInfoResponse.ok) {
-        throw new Error('Failed to get device information');
-      }
-      const deviceInfo = await deviceInfoResponse.json();
-
-      // Configure WiFi
-      const response = await fetch(`http://${ESP32_IP}/wifi`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          ssid: homeWifiSSID,
-          password: homeWifiPassword,
-        }),
-      });
-
-      if (!response.ok) {
-        throw new Error('Failed to configure device');
-      }
-
-      const result = await response.json();
-      
-      if (result.success) {
-        // Create new device entry
-        const userRef = doc(db, 'users', user.uid);
-        const userDoc = await getDoc(userRef);
-        
-        if (!userDoc.exists()) {
-          throw new Error('User document not found');
-        }
-
-        const userData = userDoc.data();
-        const currentDevices = userData.settings?.devices || [];
-
-        // Check if device already exists
-        const existingDeviceIndex = currentDevices.findIndex(
-          d => d.macAddress === deviceInfo.macAddress
-        );
-
-        const newDevice = {
-          id: deviceInfo.macAddress,
-          name: deviceInfo.name || `AquaSweeper-${deviceInfo.macAddress.slice(-4)}`,
-          macAddress: deviceInfo.macAddress,
-          ipAddress: deviceInfo.ipAddress,
-          isConnected: true,
-          lastSeen: new Date().toISOString(),
-          dateAdded: new Date().toISOString()
-        };
-
-        let updatedDevices;
-        if (existingDeviceIndex >= 0) {
-          // Update existing device
-          updatedDevices = [...currentDevices];
-          updatedDevices[existingDeviceIndex] = {
-            ...updatedDevices[existingDeviceIndex],
-            ...newDevice
-          };
-        } else {
-          // Add new device
-          updatedDevices = [...currentDevices, newDevice];
-        }
-
-        await updateDoc(userRef, {
-          'settings.devices': updatedDevices
-        });
-
-        navigation.navigate('DeviceDetails', { 
-          device: newDevice,
-          userId: user.uid 
-        });
-      } else {
-        throw new Error('Device configuration failed');
-      }
-    } catch (error) {
-      console.error('Error configuring device:', error);
-      setError('Failed to configure device. Please try again.');
-    } finally {
-      setIsConfiguring(false);
-    }
+  const renderConnectionError = () => {
+    if (!connectionError) return null;
+    
+    return (
+      <View style={styles.errorContainer}>
+        <MaterialIcons name="error-outline" size={24} color="#c62828" />
+        <Text style={styles.errorText}>
+          {connectionError}
+        </Text>
+      </View>
+    );
   };
 
   return (
-    <KeyboardAvoidingView 
-      style={{ flex: 1 }} 
-      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-    >
-      <ScrollView 
-        style={[styles.container, { backgroundColor: theme.background }]}
-        contentContainerStyle={styles.contentContainer}
-      >
-        <Text style={[styles.header, { color: theme.text }]}>
-          Device Setup
-        </Text>
-        
-        <Text style={[styles.subheader, { color: theme.textSecondary }]}>
-          Follow these steps to connect your AquaSweeper device
-        </Text>
+    <ScrollView style={styles.container}>
+      <Text style={styles.header}>
+        Device Setup
+      </Text>
+      
+      <Text style={styles.subheader}>
+        Follow these steps to connect your AquaSweeper device
+      </Text>
 
-        {steps.map(renderStep)}
-      </ScrollView>
-    </KeyboardAvoidingView>
+      {renderConnectionError()}
+
+      {deviceStatus && (currentStep === 1 || currentStep === 2) && (
+        <View style={styles.statusContainer}>
+          <Text style={styles.statusText}>
+            Device Status:
+          </Text>
+          <Text style={[styles.statusDetail, { color: deviceStatus.wifi_connected ? '#4caf50' : '#c62828' }]}>
+            {deviceStatus.wifi_connected ? '✓ Connected to WiFi' : '✗ Not Connected to WiFi'}
+          </Text>
+          <Text style={styles.statusDetail}>
+            IP: {deviceStatus.ip || '192.168.4.1'}
+          </Text>
+          <Text style={styles.statusDetail}>
+            Mode: {deviceStatus.mode || 'setup'}
+          </Text>
+        </View>
+      )}
+
+      {steps.map((step, index) => renderStep(step, index))}
+    </ScrollView>
   );
 };
 
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-  },
-  contentContainer: {
     padding: 20,
+    backgroundColor: '#ffffff',
   },
   header: {
     fontSize: 24,
     fontWeight: 'bold',
     marginBottom: 8,
+    color: '#000000',
   },
   subheader: {
     fontSize: 16,
-    marginBottom: 32,
+    marginBottom: 24,
+    color: '#757575',
   },
   stepContainer: {
     marginBottom: 24,
+    borderRadius: 12,
+    padding: 16,
+    backgroundColor: '#ffffff',
+    elevation: 2,
+    shadowColor: '#000000',
+    shadowOffset: {
+      width: 0,
+      height: 1,
+    },
+    shadowOpacity: 0.2,
+    shadowRadius: 1.41,
   },
   stepHeader: {
     flexDirection: 'row',
     alignItems: 'center',
     marginBottom: 12,
   },
-  stepNumber: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: '#E1E1E1',
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginRight: 12,
-  },
   stepTitle: {
     fontSize: 18,
     fontWeight: '600',
+    marginLeft: 12,
+    color: '#000000',
   },
   stepDescription: {
     fontSize: 14,
     lineHeight: 20,
-    marginLeft: 52,
     marginBottom: 16,
+    color: '#757575',
   },
-  actionButton: {
-    marginLeft: 52,
-    paddingHorizontal: 20,
-    paddingVertical: 12,
-    borderRadius: 8,
-    alignSelf: 'flex-start',
-  },
-  actionButtonText: {
-    color: '#FFF',
-    fontSize: 16,
-    fontWeight: '500',
-  },
-  stepConnector: {
-    width: 2,
-    height: 24,
-    position: 'absolute',
-    left: 19,
-    top: 50,
-  },
-  formContainer: {
-    marginLeft: 52,
-    marginBottom: 16,
-    width: '80%',
+  inputContainer: {
+    marginTop: 8,
   },
   input: {
-    height: 50,
     borderWidth: 1,
+    borderColor: '#e0e0e0',
+    height: 48,
     borderRadius: 8,
     paddingHorizontal: 16,
     marginBottom: 12,
-  }
+    fontSize: 16,
+    backgroundColor: '#ffffff',
+    color: '#000000',
+  },
+  button: {
+    height: 48,
+    borderRadius: 8,
+    backgroundColor: '#2196F3',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  buttonText: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#ffffff',
+  },
+  errorContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    padding: 15,
+    backgroundColor: '#ffebee',
+    borderRadius: 10,
+    marginBottom: 20,
+  },
+  errorText: {
+    fontSize: 14,
+    marginLeft: 10,
+    flex: 1,
+    color: '#c62828',
+  },
+  statusContainer: {
+    padding: 15,
+    backgroundColor: '#ffffff',
+    borderRadius: 10,
+    marginBottom: 20,
+    elevation: 1,
+    shadowColor: '#000000',
+    shadowOffset: {
+      width: 0,
+      height: 1,
+    },
+    shadowOpacity: 0.2,
+    shadowRadius: 1.41,
+  },
+  statusText: {
+    fontSize: 16,
+    fontWeight: 'bold',
+    marginBottom: 5,
+    color: '#000000',
+  },
+  statusDetail: {
+    fontSize: 14,
+    marginBottom: 3,
+    color: '#000000',
+  },
+  settingsButton: {
+    flexDirection: 'row',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 12,
+    backgroundColor: '#007AFF',
+    borderRadius: 8,
+  },
+  settingsButtonText: {
+    fontSize: 16,
+    color: '#ffffff',
+    marginLeft: 8,
+  },
+  buttonDisabled: {
+    opacity: 0.5,
+  },
+  spinner: {
+    marginLeft: 8,
+  },
 });
 
 export default DevicePairingScreen;

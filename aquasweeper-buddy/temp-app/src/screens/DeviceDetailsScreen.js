@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import {
   View,
   Text,
@@ -8,12 +8,14 @@ import {
   Alert,
   ScrollView,
   Animated,
+  RefreshControl,
 } from 'react-native';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useTheme } from '../theme/ThemeContext';
 import { doc, updateDoc, deleteDoc, arrayUnion, arrayRemove, getDoc, onSnapshot } from 'firebase/firestore';
 import { db } from '../services/firebase';
 import deviceConnectionService from '../services/DeviceConnectionService';
+import { useFocusEffect } from '@react-navigation/native';
 
 const StatusIndicator = ({ status }) => {
   const pulseAnim = React.useRef(new Animated.Value(1)).current;
@@ -77,35 +79,58 @@ const DeviceInfo = ({ label, value }) => {
 
 const DeviceDetailsScreen = ({ route, navigation }) => {
   const { theme } = useTheme();
-  const { device, userId } = route.params;
-  const [deviceName, setDeviceName] = useState(device.name);
+  const { device } = route.params;
+  const [deviceName, setDeviceName] = useState(device.deviceName || 'Unnamed Device');
   const [isEditing, setIsEditing] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [deviceData, setDeviceData] = useState(device);
+  const [refreshing, setRefreshing] = useState(false);
+  const [lastUpdated, setLastUpdated] = useState(new Date());
 
-  useEffect(() => {
-    // Start monitoring this device
-    deviceConnectionService.startMonitoring(device, userId);
+  // Setup real-time monitoring when screen is focused
+  useFocusEffect(
+    useCallback(() => {
+      let unsubscribe;
 
-    // Set up real-time listener for device updates
-    const userRef = doc(db, 'users', userId);
-    const unsubscribe = onSnapshot(userRef, (doc) => {
-      if (doc.exists()) {
-        const userData = doc.data();
-        const devices = userData.settings?.devices || [];
-        const updatedDevice = devices.find(d => d.macAddress === device.macAddress);
-        if (updatedDevice) {
-          setDeviceData(updatedDevice);
-        }
-      }
-    });
+      const setupMonitoring = async () => {
+        // Start monitoring this device
+        deviceConnectionService.startMonitoring(device);
 
-    // Stop monitoring when leaving the screen
-    return () => {
-      deviceConnectionService.stopMonitoring(device);
-      unsubscribe();
-    };
-  }, [device, userId]);
+        // Set up real-time listener for device updates
+        const userRef = doc(db, 'users', device.userId);
+        unsubscribe = onSnapshot(userRef, (doc) => {
+          if (doc.exists()) {
+            const userData = doc.data();
+            const updatedDevice = userData.connectedDevices?.find(d => d.macAddress === device.macAddress);
+            if (updatedDevice) {
+              setDeviceData(updatedDevice);
+              setDeviceName(updatedDevice.deviceName);
+              setLastUpdated(new Date());
+            }
+          }
+        });
+      };
+
+      setupMonitoring();
+
+      // Cleanup when screen loses focus
+      return () => {
+        if (unsubscribe) unsubscribe();
+        deviceConnectionService.stopMonitoring(device);
+      };
+    }, [device])
+  );
+
+  const onRefresh = useCallback(async () => {
+    setRefreshing(true);
+    try {
+      await deviceConnectionService.checkDeviceHealth(device);
+    } catch (error) {
+      console.error('Error refreshing device status:', error);
+    } finally {
+      setRefreshing(false);
+    }
+  }, [device]);
 
   const handleSaveName = async () => {
     if (deviceName.trim() === '') {
@@ -115,16 +140,26 @@ const DeviceDetailsScreen = ({ route, navigation }) => {
 
     setIsSaving(true);
     try {
-      const userRef = doc(db, 'users', userId);
-      const deviceData = {
-        ...device,
-        name: deviceName.trim()
-      };
+      const userRef = doc(db, 'users', device.userId);
+      const userDoc = await getDoc(userRef);
+      
+      if (userDoc.exists()) {
+        const userData = userDoc.data();
+        const devices = userData.connectedDevices || [];
+        const updatedDevices = devices.map(d => {
+          if (d.macAddress === device.macAddress) {
+            return { ...d, deviceName: deviceName.trim() };
+          }
+          return d;
+        });
 
-      await updateDoc(userRef, {
-        'settings.devices': arrayUnion(deviceData)
-      });
-      setIsEditing(false);
+        await updateDoc(userRef, {
+          connectedDevices: updatedDevices
+        });
+        
+        setDeviceData(prev => ({ ...prev, deviceName: deviceName.trim() }));
+        setIsEditing(false);
+      }
     } catch (error) {
       console.error('Error updating device name:', error);
       Alert.alert('Error', 'Failed to update device name');
@@ -133,37 +168,36 @@ const DeviceDetailsScreen = ({ route, navigation }) => {
     }
   };
 
-  const handleRemoveDevice = () => {
+  const handleRemoveDevice = async () => {
     Alert.alert(
       'Remove Device',
       'Are you sure you want to remove this device? This action cannot be undone.',
       [
-        { text: 'Cancel', style: 'cancel' },
-        { 
+        {
+          text: 'Cancel',
+          style: 'cancel'
+        },
+        {
           text: 'Remove',
           style: 'destructive',
           onPress: async () => {
             try {
-              // Stop monitoring before removing
-              deviceConnectionService.stopMonitoring(device);
-
-              const userRef = doc(db, 'users', userId);
-              const userDoc = await getDoc(userRef);
-              if (!userDoc.exists()) {
-                throw new Error('User document not found');
-              }
-
-              const userData = userDoc.data();
-              const currentDevices = userData.settings?.devices || [];
-              const updatedDevices = currentDevices.filter(d => 
-                d.macAddress !== device.macAddress
-              );
-
+              // Remove device from user's connectedDevices array in Firestore
+              const userRef = doc(db, 'users', device.userId);
               await updateDoc(userRef, {
-                'settings.devices': updatedDevices
+                connectedDevices: arrayRemove({
+                  ipAddress: device.ipAddress,
+                  macAddress: device.macAddress,
+                  deviceName: device.deviceName,
+                  addedAt: device.addedAt
+                })
               });
 
-              navigation.goBack();
+              // Stop monitoring this device
+              deviceConnectionService.stopMonitoring(device);
+
+              // Navigate back to settings screen
+              navigation.navigate('Settings');
             } catch (error) {
               console.error('Error removing device:', error);
               Alert.alert('Error', 'Failed to remove device. Please try again.');
@@ -174,112 +208,64 @@ const DeviceDetailsScreen = ({ route, navigation }) => {
     );
   };
 
-  const handleReconfigure = () => {
-    navigation.navigate('DevicePairing', { deviceId: device.id });
-  };
-
   return (
-    <ScrollView style={[styles.container, { backgroundColor: theme.background }]}>
-      <View style={[styles.header, { backgroundColor: theme.surface }]}>
-        <View style={styles.statusSection}>
-          <StatusIndicator status={deviceData.isConnected ? 'connected' : 'disconnected'} />
-          <Text style={[styles.statusText, { color: theme.textSecondary }]}>
-            {deviceData.isConnected ? 'Connected' : 'Disconnected'}
-          </Text>
+    <ScrollView
+      style={[styles.container, { backgroundColor: theme.background }]}
+      refreshControl={
+        <RefreshControl refreshing={refreshing} onRefresh={onRefresh} />
+      }
+    >
+      <View style={styles.content}>
+        {/* Device Name Section */}
+        <View style={[styles.section, { backgroundColor: theme.surface }]}>
+          <View style={styles.nameContainer}>
+            {isEditing ? (
+              <View style={styles.editContainer}>
+                <TextInput
+                  style={[styles.nameInput, { color: theme.text, borderColor: theme.border }]}
+                  value={deviceName}
+                  onChangeText={setDeviceName}
+                  placeholder="Enter device name"
+                  placeholderTextColor={theme.textSecondary}
+                />
+                <TouchableOpacity
+                  style={[styles.saveButton, { backgroundColor: theme.primary }]}
+                  onPress={handleSaveName}
+                  disabled={isSaving}
+                >
+                  <Text style={styles.saveButtonText}>Save</Text>
+                </TouchableOpacity>
+              </View>
+            ) : (
+              <View style={styles.nameRow}>
+                <Text style={[styles.deviceName, { color: theme.text }]}>
+                  {deviceName}
+                </Text>
+                <TouchableOpacity onPress={() => setIsEditing(true)}>
+                  <MaterialCommunityIcons name="pencil" size={20} color={theme.primary} />
+                </TouchableOpacity>
+              </View>
+            )}
+          </View>
         </View>
 
-        {isEditing ? (
-          <View style={styles.editNameContainer}>
-            <TextInput
-              style={[styles.nameInput, { color: theme.text, borderColor: theme.border }]}
-              value={deviceName}
-              onChangeText={setDeviceName}
-              placeholder="Enter device name"
-              placeholderTextColor={theme.textSecondary}
-              autoFocus
-            />
-            <View style={styles.editActions}>
-              <TouchableOpacity 
-                onPress={() => setIsEditing(false)}
-                style={[styles.editButton, { borderColor: theme.border }]}
-              >
-                <MaterialCommunityIcons name="close" size={24} color={theme.error} />
-              </TouchableOpacity>
-              <TouchableOpacity 
-                onPress={handleSaveName}
-                style={[styles.editButton, { borderColor: theme.border }]}
-                disabled={isSaving}
-              >
-                <MaterialCommunityIcons name="check" size={24} color={theme.primary} />
-              </TouchableOpacity>
-            </View>
-          </View>
-        ) : (
-          <View style={styles.nameContainer}>
-            <Text style={[styles.deviceName, { color: theme.text }]}>{deviceName}</Text>
-            <TouchableOpacity onPress={() => setIsEditing(true)}>
-              <MaterialCommunityIcons name="pencil" size={24} color={theme.primary} />
-            </TouchableOpacity>
-          </View>
-        )}
-      </View>
-
-      <View style={[styles.card, { backgroundColor: theme.surface }]}>
-        <View style={styles.detailSection}>
-          <Text style={[styles.sectionTitle, { color: theme.text }]}>Device Information</Text>
+        {/* Device Info Section */}
+        <View style={[styles.section, { backgroundColor: theme.surface }]}>
           <DeviceInfo label="MAC Address" value={deviceData.macAddress} />
           <DeviceInfo label="IP Address" value={deviceData.ipAddress} />
-          <DeviceInfo 
-            label="Last Seen" 
-            value={deviceData.lastSeen ? new Date(deviceData.lastSeen).toLocaleString() : 'Never'} 
-          />
-          <DeviceInfo 
-            label="Added On" 
-            value={deviceData.dateAdded ? new Date(deviceData.dateAdded).toLocaleString() : 'Unknown'} 
-          />
-          <DeviceInfo 
-            label="Firmware Version" 
-            value={deviceData.firmwareVersion} 
-          />
+          <DeviceInfo label="Last Updated" value={lastUpdated.toLocaleString()} />
         </View>
-      </View>
 
-      <View style={[styles.card, { backgroundColor: theme.surface }]}>
-        <View style={styles.detailSection}>
-          <Text style={[styles.sectionTitle, { color: theme.text }]}>WiFi Information</Text>
-          <DeviceInfo 
-            label="Connected To" 
-            value={deviceData.wifiSSID || 'Not Connected'} 
-          />
-          <DeviceInfo 
-            label="Signal Strength" 
-            value={deviceData.wifiStrength ? `${deviceData.wifiStrength} dBm` : 'N/A'} 
-          />
-          <DeviceInfo 
-            label="Uptime" 
-            value={formatUptime(deviceData.uptime) || 'N/A'} 
-          />
-        </View>
-      </View>
-
-      <View style={[styles.card, { backgroundColor: theme.surface }]}>
-        <View style={styles.actionSection}>
-          <Text style={[styles.sectionTitle, { color: theme.text }]}>Device Actions</Text>
-          
+        {/* Actions Section */}
+        <View style={[styles.section, { backgroundColor: theme.surface }]}>
           <TouchableOpacity
-            style={[styles.actionButton, { backgroundColor: theme.primary }]}
-            onPress={handleReconfigure}
-          >
-            <MaterialCommunityIcons name="cog" size={24} color="#fff" />
-            <Text style={styles.actionButtonText}>Reconfigure Device</Text>
-          </TouchableOpacity>
-
-          <TouchableOpacity
-            style={[styles.actionButton, { backgroundColor: theme.error }]}
+            style={[styles.removeButton, { borderColor: theme.error }]}
             onPress={handleRemoveDevice}
           >
-            <MaterialCommunityIcons name="delete" size={24} color="#fff" />
-            <Text style={styles.actionButtonText}>Remove Device</Text>
+            <MaterialCommunityIcons name="delete" size={20} color={theme.error} />
+            <Text style={[styles.removeButtonText, { color: theme.error }]}>
+              Remove Device
+            </Text>
           </TouchableOpacity>
         </View>
       </View>
@@ -287,126 +273,79 @@ const DeviceDetailsScreen = ({ route, navigation }) => {
   );
 };
 
-const formatUptime = (seconds) => {
-  if (!seconds) return 'N/A';
-  const days = Math.floor(seconds / (24 * 60 * 60));
-  const hours = Math.floor((seconds % (24 * 60 * 60)) / (60 * 60));
-  const minutes = Math.floor((seconds % (60 * 60)) / 60);
-  
-  const parts = [];
-  if (days > 0) parts.push(`${days}d`);
-  if (hours > 0) parts.push(`${hours}h`);
-  if (minutes > 0) parts.push(`${minutes}m`);
-  if (parts.length === 0) return 'Less than a minute';
-  
-  return parts.join(' ');
-};
-
 const styles = StyleSheet.create({
   container: {
     flex: 1,
   },
-  header: {
-    padding: 16,
-    marginBottom: 16,
+  content: {
+    flex: 1,
   },
-  statusSection: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginBottom: 16,
-  },
-  statusIndicator: {
-    width: 12,
-    height: 12,
-    borderRadius: 6,
-    marginRight: 8,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 0 },
-    shadowOpacity: 0.3,
-    shadowRadius: 4,
-    elevation: 3,
-  },
-  statusText: {
-    fontSize: 14,
-    fontWeight: '500',
+  section: {
+    padding: 20,
+    marginBottom: 8,
   },
   nameContainer: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
   },
+  editContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  nameInput: {
+    flex: 1,
+    height: 40,
+    borderWidth: 1,
+    borderRadius: 8,
+    paddingHorizontal: 12,
+    marginRight: 8,
+  },
+  saveButton: {
+    width: 80,
+    height: 40,
+    borderRadius: 8,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginLeft: 8,
+  },
+  saveButtonText: {
+    color: 'white',
+    fontSize: 16,
+  },
+  nameRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
   deviceName: {
     fontSize: 24,
     fontWeight: '600',
-  },
-  editNameContainer: {
-    gap: 12,
-  },
-  nameInput: {
-    fontSize: 24,
-    fontWeight: '600',
-    borderBottomWidth: 2,
-    paddingVertical: 4,
-  },
-  editActions: {
-    flexDirection: 'row',
-    justifyContent: 'flex-end',
-    gap: 12,
-  },
-  editButton: {
-    padding: 8,
-    borderRadius: 8,
-    borderWidth: 1,
-  },
-  card: {
-    borderRadius: 12,
-    marginHorizontal: 16,
-    marginBottom: 16,
-    elevation: 2,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.1,
-    shadowRadius: 4,
-  },
-  detailSection: {
-    padding: 16,
-  },
-  sectionTitle: {
-    fontSize: 18,
-    fontWeight: '600',
-    marginBottom: 16,
   },
   detailItem: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    paddingVertical: 12,
-    borderBottomWidth: 1,
-    borderBottomColor: '#e0e0e0',
+    paddingVertical: 8,
   },
   detailLabel: {
-    fontSize: 16,
+    fontSize: 14,
   },
   detailValue: {
-    fontSize: 16,
+    fontSize: 14,
     fontWeight: '500',
   },
-  actionSection: {
-    padding: 16,
-    gap: 12,
-  },
-  actionButton: {
+  removeButton: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'center',
-    padding: 12,
+    padding: 16,
     borderRadius: 8,
-    gap: 8,
+    marginBottom: 12,
+    borderWidth: 1,
   },
-  actionButtonText: {
-    color: '#fff',
+  removeButtonText: {
     fontSize: 16,
-    fontWeight: '600',
+    fontWeight: '500',
+    marginLeft: 12,
   },
 });
 
