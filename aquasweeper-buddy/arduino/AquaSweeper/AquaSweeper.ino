@@ -20,6 +20,11 @@ bool shouldTryWiFiConnection = false;
 unsigned long wifiConnectStartTime = 0;
 unsigned long lastWiFiStatus = WL_IDLE_STATUS;
 
+// Device state variables
+bool isRunning = false;
+bool isPaused = false;
+String operatingState = "stopped"; // "stopped", "running", "paused"
+
 char wifiSSID[32];
 char wifiPassword[64];
 
@@ -43,6 +48,34 @@ String getDeviceId() {
   Serial.println(deviceId);
   
   return String(deviceId);
+}
+
+// Function to simulate battery level
+int getBatteryLevel() {
+  // For demo purposes, return a value between 0 and 100
+  static int batteryLevel = 100;
+  static unsigned long lastBatteryUpdate = 0;
+  
+  // Update battery level every 60 seconds
+  if (millis() - lastBatteryUpdate > 60000) {
+    // Decrease battery by 1-3% randomly
+    int decrease = random(1, 4);
+    batteryLevel -= decrease;
+    
+    // Ensure battery level doesn't go below 0
+    if (batteryLevel < 0) {
+      batteryLevel = 0;
+    }
+    
+    // Reset battery to 100% if it gets too low (simulating a charge)
+    if (batteryLevel < 10) {
+      batteryLevel = 100;
+    }
+    
+    lastBatteryUpdate = millis();
+  }
+  
+  return batteryLevel;
 }
 
 void readWiFiCredentials() {
@@ -117,35 +150,51 @@ void addCORSHeaders() {
   Serial.println("Adding CORS headers");
   server.sendHeader("Access-Control-Allow-Origin", "*");
   server.sendHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
-  server.sendHeader("Access-Control-Allow-Headers", "Origin, X-Requested-With, Content-Type, Accept");
+  server.sendHeader("Access-Control-Allow-Headers", "Origin, X-Requested-With, Content-Type, Accept, Authorization");
+  server.sendHeader("Content-Type", "application/json");
 }
 
 void handleDiscover() {
-  Serial.println("Received /discover request");
-  Serial.print("Method: ");
-  Serial.println(server.method() == HTTP_GET ? "GET" : 
-                server.method() == HTTP_POST ? "POST" : 
-                server.method() == HTTP_OPTIONS ? "OPTIONS" : "OTHER");
-  
-  // Always add CORS headers first
   addCORSHeaders();
   
-  if (server.method() == HTTP_OPTIONS) {
-    Serial.println("Handling OPTIONS request");
-    server.send(204);
-    return;
-  }
-
-  // Create simple static response for faster processing
-  String response = "{\"deviceName\":\"AquaSweeper-" + getDeviceId() + 
-                   "\",\"type\":\"AquaSweeper\"" + 
-                   ",\"ip\":\"" + WiFi.softAPIP().toString() + 
-                   "\",\"wifi_connected\":" + String(WiFi.status() == WL_CONNECTED ? "true" : "false") + "}";
+  String deviceId = getDeviceId();
+  
+  // Create JSON response
+  DynamicJsonDocument doc(512);
+  doc["deviceId"] = deviceId;
+  doc["deviceName"] = "AquaSweeper-" + deviceId;
+  doc["deviceType"] = "AquaSweeper";
+  doc["firmwareVersion"] = "1.0.0";
+  doc["ipAddress"] = WiFi.localIP().toString();
+  doc["apIPAddress"] = WiFi.softAPIP().toString();
+  doc["macAddress"] = WiFi.macAddress();
+  doc["isConfigured"] = isConfigured;
+  doc["connectedToWiFi"] = (WiFi.status() == WL_CONNECTED);
+  
+  // Add endpoints
+  JsonArray endpoints = doc.createNestedArray("endpoints");
+  
+  JsonObject infoEndpoint = endpoints.createNestedObject();
+  infoEndpoint["path"] = "/info";
+  infoEndpoint["method"] = "GET";
+  infoEndpoint["description"] = "Get device information";
+  
+  JsonObject statusEndpoint = endpoints.createNestedObject();
+  statusEndpoint["path"] = "/status";
+  statusEndpoint["method"] = "GET";
+  statusEndpoint["description"] = "Get device status";
+  
+  JsonObject controlEndpoint = endpoints.createNestedObject();
+  controlEndpoint["path"] = "/control";
+  controlEndpoint["method"] = "POST";
+  controlEndpoint["description"] = "Control device operation";
+  
+  String response;
+  serializeJson(doc, response);
   
   Serial.println("Sending response:");
   Serial.println(response);
   
-  server.sendHeader("Content-Type", "application/json");
   server.send(200, "application/json", response);
   Serial.println("Response sent successfully");
 }
@@ -187,13 +236,84 @@ void handleWiFiConfig() {
 }
 
 void handleDeviceInfo() {
+  addCORSHeaders();
+  
+  String deviceId = getDeviceId();
+  
   String json = "{";
-  json += "\"name\":\"" + deviceName + "\",";
-  json += "\"mac\":\"" + WiFi.macAddress() + "\",";
-  json += "\"ip\":\"" + WiFi.localIP().toString() + "\"";
+  json += "\"deviceId\":\"" + deviceId + "\",";
+  json += "\"deviceName\":\"AquaSweeper-" + deviceId + "\",";
+  json += "\"firmwareVersion\":\"1.0.0\",";
+  json += "\"ipAddress\":\"" + WiFi.localIP().toString() + "\",";
+  json += "\"macAddress\":\"" + WiFi.macAddress() + "\",";
+  json += "\"apSSID\":\"" + String(deviceName) + "\",";
+  json += "\"isConfigured\":" + String(isConfigured ? "true" : "false") + ",";
+  json += "\"connectedToWiFi\":" + String(WiFi.status() == WL_CONNECTED ? "true" : "false");
   json += "}";
   
   server.send(200, "application/json", json);
+  Serial.println("Device info request handled");
+}
+
+void handleDeviceStatus() {
+  addCORSHeaders();
+  
+  String json = "{";
+  json += "\"isRunning\":" + String(isRunning) + ",";
+  json += "\"isPaused\":" + String(isPaused) + ",";
+  json += "\"operatingState\":\"" + operatingState + "\",";
+  json += "\"batteryLevel\":" + String(getBatteryLevel());
+  json += "}";
+  
+  server.send(200, "application/json", json);
+  Serial.println("Device status request handled");
+}
+
+void handleDeviceControl() {
+  addCORSHeaders();
+  
+  if (server.hasArg("plain")) {
+    String json = server.arg("plain");
+    StaticJsonDocument<200> doc;
+    DeserializationError error = deserializeJson(doc, json);
+    
+    if (error) {
+      server.send(400, "application/json", "{\"success\":false,\"message\":\"Invalid JSON\"}");
+      return;
+    }
+
+    const char* action = doc["action"];
+    
+    if (!action) {
+      server.send(400, "application/json", "{\"success\":false,\"message\":\"Missing action\"}");
+      return;
+    }
+
+    if (strcmp(action, "start") == 0) {
+      isRunning = true;
+      isPaused = false;
+      operatingState = "running";
+      server.send(200, "application/json", "{\"success\":true,\"message\":\"Device started\"}");
+      Serial.println("Device started");
+    } else if (strcmp(action, "stop") == 0) {
+      isRunning = false;
+      isPaused = false;
+      operatingState = "stopped";
+      server.send(200, "application/json", "{\"success\":true,\"message\":\"Device stopped\"}");
+      Serial.println("Device stopped");
+    } else if (strcmp(action, "pause") == 0) {
+      isRunning = false;
+      isPaused = true;
+      operatingState = "paused";
+      server.send(200, "application/json", "{\"success\":true,\"message\":\"Device paused\"}");
+      Serial.println("Device paused");
+    } else {
+      server.send(400, "application/json", "{\"success\":false,\"message\":\"Invalid action\"}");
+      Serial.println("Invalid action requested");
+    }
+  } else {
+    server.send(400, "application/json", "{\"success\":false,\"message\":\"No data received\"}");
+  }
 }
 
 void setup() {
@@ -247,6 +367,25 @@ void setup() {
   
   server.on("/info", HTTP_GET, handleDeviceInfo);
   server.on("/info", HTTP_OPTIONS, []() {
+    addCORSHeaders();
+    server.send(204);
+  });
+  
+  // Add an alias for /info as /device for compatibility
+  server.on("/device", HTTP_GET, handleDeviceInfo);
+  server.on("/device", HTTP_OPTIONS, []() {
+    addCORSHeaders();
+    server.send(204);
+  });
+  
+  server.on("/status", HTTP_GET, handleDeviceStatus);
+  server.on("/status", HTTP_OPTIONS, []() {
+    addCORSHeaders();
+    server.send(204);
+  });
+  
+  server.on("/control", HTTP_POST, handleDeviceControl);
+  server.on("/control", HTTP_OPTIONS, []() {
     addCORSHeaders();
     server.send(204);
   });

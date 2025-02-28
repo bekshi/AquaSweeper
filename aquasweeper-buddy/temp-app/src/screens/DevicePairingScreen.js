@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   View,
   Text,
@@ -14,14 +14,17 @@ import {
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { MaterialIcons } from '@expo/vector-icons';
 import { db } from '../services/firebase';
-import { doc, updateDoc, arrayUnion, getDoc } from 'firebase/firestore';
+import { doc, updateDoc, arrayUnion, getDoc, setDoc } from 'firebase/firestore';
 import { useAuth } from '../services/AuthContext';
+import { useDevice } from '../services/DeviceContext';
+import NetInfo from '@react-native-community/netinfo';
 
 const AQUASWEEPER_AP_PREFIX = 'AquaSweeper';
 const DEVICE_IP = '192.168.4.1';
 
 const DevicePairingScreen = ({ navigation }) => {
   const { user } = useAuth();
+  const { connectToDevice } = useDevice();
   const [currentStep, setCurrentStep] = useState(0);
   const [homeWifiSSID, setHomeWifiSSID] = useState('');
   const [homeWifiPassword, setHomeWifiPassword] = useState('');
@@ -31,6 +34,30 @@ const DevicePairingScreen = ({ navigation }) => {
   const [deviceStatus, setDeviceStatus] = useState(null);
   const [connectedToAquaSweeper, setConnectedToAquaSweeper] = useState(false);
   const [showingWifiSettings, setShowingWifiSettings] = useState(false);
+  const [deviceInfo, setDeviceInfo] = useState(null);
+  const [networkInfo, setNetworkInfo] = useState(null);
+
+  // Monitor network changes
+  useEffect(() => {
+    const unsubscribe = NetInfo.addEventListener(state => {
+      console.log('Network state changed:', state);
+      setNetworkInfo(state);
+      
+      // Auto-detect connection to AquaSweeper network
+      if (state.isConnected && 
+          state.type === 'wifi' && 
+          state.details && 
+          state.details.ssid && 
+          state.details.ssid.startsWith(AQUASWEEPER_AP_PREFIX)) {
+        console.log('Connected to AquaSweeper network:', state.details.ssid);
+        setConnectedToAquaSweeper(true);
+      }
+    });
+
+    return () => {
+      unsubscribe();
+    };
+  }, []);
 
   const saveWiFiCredentials = async () => {
     try {
@@ -303,6 +330,19 @@ const DevicePairingScreen = ({ navigation }) => {
       case 2: // Verify home network connection
         setIsVerifying(true);
         try {
+          // If we have device info, connect to it via DeviceContext
+          if (deviceInfo) {
+            const deviceData = {
+              deviceId: `${deviceInfo.mac.replace(/:/g, '')}_${Date.now()}`,
+              ipAddress: deviceInfo.ip,
+              macAddress: deviceInfo.mac,
+              name: deviceInfo.name || `AquaSweeper-${deviceInfo.mac.slice(-6)}`
+            };
+            
+            // Connect to the device using DeviceContext
+            connectToDevice(deviceData);
+          }
+          
           Alert.alert(
             'Setup Complete!',
             'Your AquaSweeper device has been successfully paired and registered.',
@@ -341,15 +381,54 @@ const DevicePairingScreen = ({ navigation }) => {
 
   const saveDeviceToFirestore = async (deviceInfo) => {
     try {
+      if (!user || !user.uid) {
+        throw new Error('User not authenticated');
+      }
+
+      console.log('Saving device to Firestore:', deviceInfo);
+      
+      // Create a unique device ID from MAC address
+      const cleanMac = deviceInfo.mac.replace(/:/g, '');
+      const deviceId = cleanMac.slice(-6); // Use last 6 characters of MAC
+      
+      // Get a reference to the user document
       const userRef = doc(db, 'users', user.uid);
-      await updateDoc(userRef, {
-        connectedDevices: arrayUnion({
-          ipAddress: deviceInfo.ip,
-          macAddress: deviceInfo.mac,
-          deviceName: deviceInfo.name || `AquaSweeper-${deviceInfo.mac.slice(-6)}`,
-          addedAt: new Date().toISOString()
-        })
-      });
+      
+      // Get the user document to check if it exists
+      const userDoc = await getDoc(userRef);
+      
+      // Prepare the device data
+      const deviceData = {
+        id: deviceId,
+        deviceId: deviceId,
+        ipAddress: deviceInfo.ip,
+        macAddress: deviceInfo.mac,
+        name: `AquaSweeper-${deviceId}`,
+        addedAt: new Date().toISOString(),
+        status: 'online',
+        state: 'stopped'
+      };
+      
+      console.log('Prepared device data:', deviceData);
+      
+      if (userDoc.exists()) {
+        // Update the existing user document with connectedDevices array
+        await updateDoc(userRef, {
+          connectedDevices: arrayUnion(deviceData)
+        });
+        console.log('Updated existing user document with device');
+      } else {
+        // Create a new user document with connectedDevices array
+        await setDoc(userRef, {
+          email: user.email,
+          connectedDevices: [deviceData]
+        });
+        console.log('Created new user document with device');
+      }
+      
+      // Save device to context
+      connectToDevice(deviceData);
+      
       return true;
     } catch (error) {
       console.error('Error saving device to Firestore:', error);
@@ -366,6 +445,7 @@ const DevicePairingScreen = ({ navigation }) => {
         throw new Error('Failed to get device info');
       }
       const data = await response.json();
+      setDeviceInfo(data); // Store the device info in state
       return data;
     } catch (error) {
       console.error('Error getting device info:', error);

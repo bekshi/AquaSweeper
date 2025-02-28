@@ -79,27 +79,69 @@ const DeviceItem = ({ device, onPress }) => {
     // Start checking device connection
     const checkConnection = async () => {
       try {
-        const response = await fetch(`http://${device.ipAddress}/discover`, {
-          signal: AbortSignal.timeout(2000)
-        });
+        console.log('Checking connection to device:', device);
+        if (!device.ipAddress) {
+          console.log('No IP address for device:', device);
+          return;
+        }
         
-        if (response.ok) {
-          setDeviceStatus('connected');
-          setLastPing(Date.now());
-        } else {
+        // Simple timeout promise
+        const fetchWithTimeout = async (url, options = {}, timeout = 3000) => {
+          try {
+            const controller = new AbortController();
+            const id = setTimeout(() => controller.abort(), timeout);
+            
+            const response = await fetch(url, {
+              ...options,
+              signal: controller.signal,
+              headers: {
+                'Cache-Control': 'no-cache',
+                'Pragma': 'no-cache'
+              }
+            });
+            
+            clearTimeout(id);
+            return response;
+          } catch (error) {
+            if (error.name === 'AbortError') {
+              console.log('Fetch request timed out');
+            }
+            throw error;
+          }
+        };
+        
+        try {
+          // Try to connect to the device with a longer timeout
+          const response = await fetchWithTimeout(
+            `http://${device.ipAddress}/discover?nocache=${Date.now()}`, 
+            {}, 
+            3000
+          );
+          
+          if (response.ok) {
+            setDeviceStatus('connected');
+            setLastPing(Date.now());
+          } else {
+            setDeviceStatus(lastPing && Date.now() - lastPing < 10000 ? 'reconnecting' : 'disconnected');
+          }
+        } catch (error) {
+          console.log('Error checking device connection:', error.name, error.message);
+          // If we had a successful ping recently, show reconnecting instead of disconnected
           setDeviceStatus(lastPing && Date.now() - lastPing < 10000 ? 'reconnecting' : 'disconnected');
         }
       } catch (error) {
-        setDeviceStatus(lastPing && Date.now() - lastPing < 10000 ? 'reconnecting' : 'disconnected');
+        console.log('Error in connection check outer block:', error);
+        setDeviceStatus('disconnected');
       }
     };
 
-    const interval = setInterval(checkConnection, 5000);
+    // Check less frequently to reduce network traffic
+    const interval = setInterval(checkConnection, 10000);
     checkConnection(); // Initial check
 
     return () => clearInterval(interval);
-  }, [device.ipAddress]);
-  
+  }, [device.ipAddress, lastPing]);
+
   return (
     <TouchableOpacity
       style={[styles.deviceItem, { backgroundColor: theme.surface }]}
@@ -108,7 +150,7 @@ const DeviceItem = ({ device, onPress }) => {
       <View style={styles.deviceInfo}>
         <PulsingStatusIndicator status={deviceStatus} />
         <Text style={[styles.deviceName, { color: theme.text, marginLeft: 10 }]}>
-          {device.deviceName}
+          {device.name || `AquaSweeper-${device.id || ''}`}
         </Text>
       </View>
       <MaterialCommunityIcons 
@@ -136,7 +178,24 @@ const SettingsScreen = ({ navigation }) => {
     const unsubscribe = onSnapshot(userRef, (doc) => {
       if (doc.exists()) {
         const userData = doc.data();
-        setConnectedDevices(userData.connectedDevices || []);
+        
+        // Make sure we're getting the devices from the correct field
+        const devices = userData.connectedDevices || [];
+        console.log('Connected devices from Firestore:', devices);
+        
+        // Ensure each device has required properties
+        const validDevices = devices.map(device => ({
+          ...device,
+          // Ensure id exists
+          id: device.id || device.deviceId || `device-${Date.now()}`,
+          // Ensure name is properly formatted
+          name: device.name || `AquaSweeper-${device.id || ''}`,
+          // Ensure ipAddress exists for connection checks
+          ipAddress: device.ipAddress || device.ip || '192.168.0.1'
+        }));
+        
+        setConnectedDevices(validDevices);
+        console.log('Processed connected devices:', validDevices);
         setLoading(false);
       }
     }, (error) => {
@@ -396,7 +455,7 @@ const SettingsScreen = ({ navigation }) => {
         {renderProfileSection()}
         <View style={styles.section}>
           <View style={styles.sectionHeader}>
-            <Text style={[styles.sectionTitle, { color: theme.text }]}>Connected Devices</Text>
+            <Text style={[styles.sectionTitle, { color: theme.text }]}>Paired Devices</Text>
             <TouchableOpacity onPress={handleAddDevice}>
               <MaterialCommunityIcons name="plus" size={24} color={theme.primary} />
             </TouchableOpacity>

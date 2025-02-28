@@ -4,6 +4,7 @@ import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { NavigationContainer } from '@react-navigation/native';
 import { AuthProvider } from './src/services/AuthContext';
 import { ThemeProvider } from './src/theme/ThemeContext';
+import { DeviceProvider } from './src/services/DeviceContext';
 import AppNavigator from './src/navigation/AppNavigator';
 import AppInitializer from './src/services/AppInitializer';
 
@@ -17,7 +18,9 @@ export default function App() {
       <NavigationContainer>
         <AuthProvider>
           <ThemeProvider>
-            <AppNavigator />
+            <DeviceProvider>
+              <AppNavigator />
+            </DeviceProvider>
           </ThemeProvider>
         </AuthProvider>
       </NavigationContainer>
