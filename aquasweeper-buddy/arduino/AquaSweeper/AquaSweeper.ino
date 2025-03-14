@@ -24,6 +24,9 @@ unsigned long lastWiFiStatus = WL_IDLE_STATUS;
 bool isRunning = false;
 bool isPaused = false;
 String operatingState = "stopped"; // "stopped", "running", "paused"
+const int LED_PIN = 21; // Onboard LED pin (D13 on FireBeetle 2 ESP32-S3)
+unsigned long lastBlinkTime = 0;
+bool ledState = false;
 
 char wifiSSID[32];
 char wifiPassword[64];
@@ -282,6 +285,71 @@ void handleDeviceControl() {
       return;
     }
 
+    // Check for numeric command format from mobile app
+    if (doc.containsKey("numericCommand")) {
+      int command = doc["numericCommand"];
+      
+      if (command == 0) { // Stop
+        isRunning = false;
+        isPaused = false;
+        operatingState = "stopped";
+        digitalWrite(LED_PIN, LOW); // Turn LED off
+        server.send(200, "application/json", "{\"success\":true,\"message\":\"Device stopped\"}");
+        Serial.println("Device stopped via numeric command");
+      } else if (command == 1) { // Start
+        isRunning = true;
+        isPaused = false;
+        operatingState = "running";
+        digitalWrite(LED_PIN, HIGH); // Turn LED on
+        server.send(200, "application/json", "{\"success\":true,\"message\":\"Device started\"}");
+        Serial.println("Device started via numeric command");
+      } else if (command == 2) { // Pause
+        isRunning = false;
+        isPaused = true;
+        operatingState = "paused";
+        // LED will blink in the loop function
+        server.send(200, "application/json", "{\"success\":true,\"message\":\"Device paused\"}");
+        Serial.println("Device paused via numeric command");
+      } else {
+        server.send(400, "application/json", "{\"success\":false,\"message\":\"Invalid command value\"}");
+        Serial.println("Invalid numeric command value");
+      }
+      return;
+    }
+
+    // Check for direct command field (for backward compatibility)
+    if (doc.containsKey("command")) {
+      int command = doc["command"];
+      
+      if (command == 0) { // Stop
+        isRunning = false;
+        isPaused = false;
+        operatingState = "stopped";
+        digitalWrite(LED_PIN, LOW); // Turn LED off
+        server.send(200, "application/json", "{\"success\":true,\"message\":\"Device stopped\"}");
+        Serial.println("Device stopped via direct command");
+      } else if (command == 1) { // Start
+        isRunning = true;
+        isPaused = false;
+        operatingState = "running";
+        digitalWrite(LED_PIN, HIGH); // Turn LED on
+        server.send(200, "application/json", "{\"success\":true,\"message\":\"Device started\"}");
+        Serial.println("Device started via direct command");
+      } else if (command == 2) { // Pause
+        isRunning = false;
+        isPaused = true;
+        operatingState = "paused";
+        // LED will blink in the loop function
+        server.send(200, "application/json", "{\"success\":true,\"message\":\"Device paused\"}");
+        Serial.println("Device paused via direct command");
+      } else {
+        server.send(400, "application/json", "{\"success\":false,\"message\":\"Invalid command value\"}");
+        Serial.println("Invalid direct command value");
+      }
+      return;
+    }
+
+    // Original string command format
     const char* action = doc["action"];
     
     if (!action) {
@@ -293,18 +361,21 @@ void handleDeviceControl() {
       isRunning = true;
       isPaused = false;
       operatingState = "running";
+      digitalWrite(LED_PIN, HIGH); // Turn LED on
       server.send(200, "application/json", "{\"success\":true,\"message\":\"Device started\"}");
       Serial.println("Device started");
     } else if (strcmp(action, "stop") == 0) {
       isRunning = false;
       isPaused = false;
       operatingState = "stopped";
+      digitalWrite(LED_PIN, LOW); // Turn LED off
       server.send(200, "application/json", "{\"success\":true,\"message\":\"Device stopped\"}");
       Serial.println("Device stopped");
     } else if (strcmp(action, "pause") == 0) {
       isRunning = false;
       isPaused = true;
       operatingState = "paused";
+      // LED will blink in the loop function
       server.send(200, "application/json", "{\"success\":true,\"message\":\"Device paused\"}");
       Serial.println("Device paused");
     } else {
@@ -320,6 +391,10 @@ void setup() {
   Serial.begin(115200);
   while (!Serial) delay(100);
   Serial.println("\nAquaSweeper Starting...");
+
+  // Initialize LED pin
+  pinMode(LED_PIN, OUTPUT);
+  digitalWrite(LED_PIN, LOW); // Start with LED off
 
   // Initialize EEPROM
   EEPROM.begin(EEPROM_SIZE);
@@ -397,29 +472,43 @@ void setup() {
 void loop() {
   server.handleClient();
   
-  // Try WiFi connection if needed
+  // Handle LED blinking for paused state
+  if (isPaused) {
+    unsigned long currentTime = millis();
+    if (currentTime - lastBlinkTime >= 500) { // Blink every 500ms
+      ledState = !ledState;
+      digitalWrite(LED_PIN, ledState);
+      lastBlinkTime = currentTime;
+    }
+  }
+  
+  // Handle WiFi connection attempts
   if (shouldTryWiFiConnection) {
     connectToWiFi();
   }
   
   // Check WiFi connection status
-  if (WiFi.status() != lastWiFiStatus) {
-    lastWiFiStatus = WiFi.status();
-    if (lastWiFiStatus == WL_CONNECTED) {
-      Serial.print("Connected to WiFi. IP: ");
-      Serial.println(WiFi.localIP());
-      isConnectingToWiFi = false;
-    } else if (lastWiFiStatus == WL_CONNECT_FAILED) {
-      Serial.println("Failed to connect to WiFi");
-      isConnectingToWiFi = false;
+  if (isConnectingToWiFi) {
+    unsigned long currentTime = millis();
+    if (WiFi.status() != lastWiFiStatus) {
+      lastWiFiStatus = WiFi.status();
+      if (lastWiFiStatus == WL_CONNECTED) {
+        Serial.println("Connected to WiFi!");
+        Serial.print("IP address: ");
+        Serial.println(WiFi.localIP());
+        isConnectingToWiFi = false;
+      }
     }
-  }
-  
-  // Check connection timeout
-  if (isConnectingToWiFi && (millis() - wifiConnectStartTime > 20000)) {
-    Serial.println("WiFi connection timed out");
-    isConnectingToWiFi = false;
-    WiFi.disconnect();
+    
+    // Timeout after 30 seconds
+    if (currentTime - wifiConnectStartTime > 30000) {
+      Serial.println("WiFi connection attempt timed out");
+      WiFi.disconnect();
+      isConnectingToWiFi = false;
+      // Try again in 60 seconds
+      shouldTryWiFiConnection = true;
+      wifiConnectStartTime = currentTime;
+    }
   }
   
   delay(1); // Minimal delay to prevent watchdog issues while keeping response time fast

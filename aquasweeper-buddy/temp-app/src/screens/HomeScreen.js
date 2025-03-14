@@ -11,6 +11,9 @@ import {
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useTheme } from '../theme/ThemeContext';
 import { useDevice } from '../services/DeviceContext';
+import { useAuth } from '../services/AuthContext';
+import { collection, addDoc, doc } from 'firebase/firestore';
+import { db } from '../services/firebase';
 
 // Pulsing Status Indicator Component
 const PulsingStatusIndicator = ({ status }) => {
@@ -60,22 +63,24 @@ const PulsingStatusIndicator = ({ status }) => {
 };
 
 // Device Connection Status Component
-const DeviceConnectionStatus = ({ device }) => {
+const DeviceConnectionStatus = () => {
   const { theme } = useTheme();
+  const { currentDevice } = useDevice();
   const [deviceStatus, setDeviceStatus] = useState('disconnected');
   const [lastPing, setLastPing] = useState(null);
 
-  React.useEffect(() => {
-    // Start checking device connection
+  // Check device connection status
+  useEffect(() => {
+    if (!currentDevice?.ipAddress) {
+      console.log('DeviceConnectionStatus - No device IP available');
+      setDeviceStatus('disconnected');
+      return;
+    }
+
     const checkConnection = async () => {
       try {
-        console.log('Checking connection to device:', device);
-        if (!device || !device.ipAddress) {
-          console.log('No IP address for device:', device);
-          return;
-        }
+        console.log('DeviceConnectionStatus - Checking connection to:', currentDevice.ipAddress);
         
-        // Simple timeout promise
         const fetchWithTimeout = async (url, options = {}, timeout = 3000) => {
           try {
             const controller = new AbortController();
@@ -94,53 +99,47 @@ const DeviceConnectionStatus = ({ device }) => {
             return response;
           } catch (error) {
             if (error.name === 'AbortError') {
-              console.log('Fetch request timed out');
+              console.log('DeviceConnectionStatus - Fetch request timed out');
             }
             throw error;
           }
         };
         
-        try {
-          // Try to connect to the device with a longer timeout
-          const response = await fetchWithTimeout(
-            `http://${device.ipAddress}/discover?nocache=${Date.now()}`, 
-            {}, 
-            3000
-          );
-          
-          if (response.ok) {
-            setDeviceStatus('connected');
-            setLastPing(Date.now());
-          } else {
-            setDeviceStatus(lastPing && Date.now() - lastPing < 10000 ? 'reconnecting' : 'disconnected');
-          }
-        } catch (error) {
-          console.log('Error checking device connection:', error.name, error.message);
-          // If we had a successful ping recently, show reconnecting instead of disconnected
+        // Try to connect to the device
+        const response = await fetchWithTimeout(
+          `http://${currentDevice.ipAddress}/discover?nocache=${Date.now()}`, 
+          {}, 
+          3000
+        );
+        
+        if (response.ok) {
+          console.log('DeviceConnectionStatus - Device connected');
+          setDeviceStatus('connected');
+          setLastPing(Date.now());
+        } else {
+          console.log('DeviceConnectionStatus - Device not responding');
           setDeviceStatus(lastPing && Date.now() - lastPing < 10000 ? 'reconnecting' : 'disconnected');
         }
       } catch (error) {
-        console.log('Error in connection check outer block:', error);
-        setDeviceStatus('disconnected');
+        console.log('DeviceConnectionStatus - Connection error:', error.message);
+        setDeviceStatus(lastPing && Date.now() - lastPing < 10000 ? 'reconnecting' : 'disconnected');
       }
     };
 
-    // Check less frequently to reduce network traffic
-    const interval = setInterval(checkConnection, 10000);
-    checkConnection(); // Initial check
+    // Check immediately
+    checkConnection();
+
+    // Then check every 5 seconds
+    const interval = setInterval(checkConnection, 5000);
 
     return () => clearInterval(interval);
-  }, [device?.ipAddress, lastPing]);
+  }, [currentDevice?.ipAddress, lastPing]);
 
   return (
     <View style={styles.connectionStatus}>
       <PulsingStatusIndicator status={deviceStatus} />
       <Text style={[styles.statusText, { color: theme.text }]}>
-        {deviceStatus === 'connected' 
-          ? 'Connected' 
-          : deviceStatus === 'reconnecting' 
-            ? 'Reconnecting...' 
-            : 'Disconnected'}
+        {deviceStatus === 'connected' ? 'Connected' : deviceStatus === 'reconnecting' ? 'Reconnecting...' : 'Disconnected'}
       </Text>
     </View>
   );
@@ -148,14 +147,30 @@ const DeviceConnectionStatus = ({ device }) => {
 
 const HomeScreen = () => {
   const { theme } = useTheme();
+  const { user } = useAuth();
   const { 
     currentDevice, 
     deviceState, 
     batteryLevel, 
     startDevice, 
     stopDevice, 
-    pauseDevice 
+    pauseDevice,
   } = useDevice();
+
+  const [sessionStartTime, setSessionStartTime] = useState(null);
+
+  // Debug logs for device state
+  useEffect(() => {
+    console.log('HomeScreen - Device State:', {
+      deviceState,
+      currentDevice: currentDevice ? {
+        id: currentDevice.id,
+        name: currentDevice.name,
+        ipAddress: currentDevice.ipAddress
+      } : null,
+      batteryLevel
+    });
+  }, [deviceState, currentDevice, batteryLevel]);
   
   const isRunning = deviceState === 'running';
   const isPaused = deviceState === 'paused';
@@ -205,6 +220,15 @@ const HomeScreen = () => {
     console.log('================================');
   }, [deviceState, currentDevice, batteryLevel]);
 
+  // Update session start time when device starts running
+  useEffect(() => {
+    if (isRunning && !sessionStartTime) {
+      setSessionStartTime(new Date());
+    } else if (!isRunning && !isPaused) {
+      setSessionStartTime(null);
+    }
+  }, [isRunning, isPaused]);
+
   const startTimer = () => {
     if (timerInterval.current) return;
     
@@ -248,6 +272,32 @@ const HomeScreen = () => {
     const mins = Math.floor((seconds % 3600) / 60);
     const secs = seconds % 60;
     return `${hrs.toString().padStart(2, '0')}:${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+  };
+
+  const logCleaningSession = async (duration) => {
+    if (!user || !currentDevice || !sessionStartTime) return;
+    
+    try {
+      const endTime = new Date();
+      const userSkimmersRef = collection(db, 'users', user.uid, 'skimmers');
+      const skimmerRef = doc(userSkimmersRef, currentDevice.id);
+      const sessionsRef = collection(skimmerRef, 'cleaningSessions');
+      
+      await addDoc(sessionsRef, {
+        startTime: sessionStartTime,
+        endTime: endTime,
+        duration: duration,
+        deviceId: currentDevice.id,
+        deviceName: currentDevice.name,
+        batteryLevel: batteryLevel,
+        status: 'completed',
+        userId: user.uid // Add user ID for additional security
+      });
+      
+      console.log('Cleaning session logged successfully');
+    } catch (error) {
+      console.error('Error logging cleaning session:', error);
+    }
   };
 
   const handleToggleRun = () => {
@@ -301,8 +351,12 @@ const HomeScreen = () => {
                 if (!success) {
                   Alert.alert('Error', 'Failed to stop device');
                 } else {
+                  // Log the cleaning session before resetting the timer
+                  if (sessionStartTime) {
+                    logCleaningSession(elapsedTime.current);
+                  }
                   elapsedTime.current = 0;
-                  Alert.alert('Run Completed', 'Your cleaning session has ended.', [{ text: 'OK' }]);
+                  Alert.alert('Run Completed', 'Your cleaning session has been logged.', [{ text: 'OK' }]);
                 }
               })
               .catch(error => {
@@ -327,9 +381,7 @@ const HomeScreen = () => {
           </View>
           
           {/* Connection Status */}
-          <DeviceConnectionStatus 
-            device={currentDevice} 
-          />
+          <DeviceConnectionStatus />
           
           {/* Battery and Status */}
           <View style={styles.statusRow}>
@@ -348,7 +400,7 @@ const HomeScreen = () => {
                 backgroundColor: isRunning 
                   ? theme.success 
                   : isPaused 
-                    ? theme.warning 
+                    ? theme.warning
                     : theme.textSecondary 
               }]} />
               <Text style={[styles.statusText, { color: theme.text }]}>
@@ -364,7 +416,7 @@ const HomeScreen = () => {
                 borderColor: isRunning 
                   ? theme.success 
                   : isPaused 
-                    ? theme.warning 
+                    ? theme.warning
                     : theme.primary,
                 transform: [{ scale: isRunning ? pulseAnim : 1 }]
               }
@@ -383,7 +435,7 @@ const HomeScreen = () => {
                 styles.button,
                 { 
                   backgroundColor: isRunning 
-                    ? theme.warning 
+                    ? theme.warning
                     : isPaused 
                       ? theme.success 
                       : theme.primary,

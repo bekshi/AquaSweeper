@@ -38,7 +38,7 @@ const InformationScreen = () => {
 
   const addTestDataIfNeeded = async () => {
     try {
-      const userSkimmersRef = collection(db, 'users', user.email, 'skimmers');
+      const userSkimmersRef = collection(db, 'users', user.uid, 'skimmers');
       const skimmersSnapshot = await getDocs(userSkimmersRef);
 
       if (skimmersSnapshot.empty) {
@@ -47,7 +47,8 @@ const InformationScreen = () => {
           name: 'AquaSweeper Pro',
           model: 'AS-001',
           serialNumber: 'AS-001-2023',
-          addedAt: new Date()
+          addedAt: new Date(),
+          userId: user.uid
         });
 
         const sessionsRef = collection(skimmerRef, 'cleaningSessions');
@@ -67,7 +68,8 @@ const InformationScreen = () => {
             debrisCollected: Math.floor(Math.random() * 500) + 100, // Random amount between 100-600g
             areasCovered: ['Main Pool', 'Deep End'],
             batteryUsed: Math.floor(Math.random() * 20) + 10, // Random between 10-30%
-            status: 'completed'
+            status: 'completed',
+            userId: user.uid
           });
         }
       }
@@ -81,7 +83,7 @@ const InformationScreen = () => {
     
     try {
       setLoading(true);
-      console.log('Fetching sessions for user:', user.email); // Debug log
+      console.log('Fetching sessions for user:', user.uid); // Debug log
       
       const now = new Date();
       let dateThreshold = new Date();
@@ -92,7 +94,7 @@ const InformationScreen = () => {
         dateThreshold.setMonth(now.getMonth() - 1);
       }
 
-      const userSkimmersRef = collection(db, 'users', user.email, 'skimmers');
+      const userSkimmersRef = collection(db, 'users', user.uid, 'skimmers');
       const userSkimmersSnapshot = await getDocs(userSkimmersRef);
       
       console.log('Found skimmers:', userSkimmersSnapshot.size); // Debug log
@@ -132,9 +134,17 @@ const InformationScreen = () => {
   };
 
   const formatDuration = (seconds) => {
-    const minutes = Math.floor(seconds / 60);
-    const remainingSeconds = seconds % 60;
-    return `${minutes}:${remainingSeconds.toString().padStart(2, '0')}`;
+    const hours = Math.floor(seconds / 3600);
+    const minutes = Math.floor((seconds % 3600) / 60);
+    const secs = seconds % 60;
+    
+    if (hours > 0) {
+      return `${hours}h ${minutes}m`;
+    } else if (minutes > 0) {
+      return `${minutes}m ${secs}s`;
+    } else {
+      return `${secs}s`;
+    }
   };
 
   const formatDate = (date) => {
@@ -202,13 +212,30 @@ const InformationScreen = () => {
       <View style={styles.sessionHeader}>
         <Text style={[styles.sessionDate, { color: theme.text }]}>{formatDate(item.startTime)}</Text>
         <View style={styles.batteryIndicator}>
-          <Text style={[styles.batteryText, { color: theme.textSecondary }]}>{item.batteryUsed}% used</Text>
+          <MaterialCommunityIcons 
+            name="battery" 
+            size={16} 
+            color={item.batteryUsed > 20 ? theme.success : theme.error} 
+          />
+          <Text style={[styles.batteryText, { color: theme.textSecondary }]}>
+            {item.batteryUsed}%
+          </Text>
         </View>
       </View>
       <View style={styles.sessionDetails}>
-        <View style={styles.detailColumn}>
-          <Text style={[styles.detailLabel, { color: theme.textSecondary }]}>Duration</Text>
-          <Text style={[styles.detailValue, { color: theme.text }]}>{formatDuration(item.duration)}</Text>
+        <View style={styles.detailRow}>
+          <View style={styles.detailColumn}>
+            <Text style={[styles.detailLabel, { color: theme.textSecondary }]}>Duration</Text>
+            <Text style={[styles.detailValue, { color: theme.text }]}>
+              {formatDuration((item.endTime - item.startTime) / 1000)}
+            </Text>
+          </View>
+          <View style={styles.detailColumn}>
+            <Text style={[styles.detailLabel, { color: theme.textSecondary }]}>Device</Text>
+            <Text style={[styles.detailValue, { color: theme.text }]} numberOfLines={1}>
+              {item.skimmerId || 'AquaSweeper'}
+            </Text>
+          </View>
         </View>
       </View>
     </View>
@@ -367,11 +394,6 @@ const styles = StyleSheet.create({
     padding: 16,
     marginBottom: 12,
     borderWidth: 1,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.2,
-    shadowRadius: 2,
-    elevation: 2,
   },
   sessionHeader: {
     flexDirection: 'row',
@@ -384,14 +406,17 @@ const styles = StyleSheet.create({
     fontWeight: '600',
   },
   batteryIndicator: {
-    padding: 6,
-    borderRadius: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
   },
   batteryText: {
+    marginLeft: 4,
     fontSize: 14,
-    fontWeight: '500',
   },
   sessionDetails: {
+    marginTop: 8,
+  },
+  detailRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
   },
@@ -399,12 +424,12 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   detailLabel: {
-    fontSize: 14,
+    fontSize: 12,
     marginBottom: 4,
   },
   detailValue: {
-    fontSize: 16,
-    fontWeight: '600',
+    fontSize: 14,
+    fontWeight: '500',
   },
   emptyContainer: {
     flex: 1,

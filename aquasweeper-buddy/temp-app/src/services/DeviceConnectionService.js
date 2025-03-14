@@ -11,9 +11,16 @@ class DeviceConnectionService {
     this.scanning = false;
     this.lastKnownIPs = new Map(); // Store last known IPs for devices
     this.networkInfo = null;
+    this.hasConnectedDevice = false;
+    this.onDeviceFound = null; // Callback when a device is found
+  }
+
+  setDeviceFoundCallback(callback) {
+    this.onDeviceFound = callback;
   }
 
   async initialize() {
+    console.log('Device connection service initialized');
     // Load last known IPs from storage
     try {
       const savedIPs = await AsyncStorage.getItem('lastKnownDeviceIPs');
@@ -47,6 +54,7 @@ class DeviceConnectionService {
   async startNetworkScan() {
     if (this.scanning) return;
     this.scanning = true;
+    this.hasConnectedDevice = false;
 
     while (this.scanning) {
       try {
@@ -66,31 +74,26 @@ class DeviceConnectionService {
         // Scan last known IPs first
         for (const [macAddress, lastIP] of this.lastKnownIPs.entries()) {
           console.log(`Checking last known IP: ${lastIP} for device: ${macAddress}`);
-          await this.tryConnectToDevice(lastIP, macAddress);
-        }
-
-        // Common IPs to skip (typically routers, gateways, etc.)
-        const skipIPs = [1, 254, 255];
-        
-        // First try common ESP32 default IPs (when in AP mode)
-        const priorityIPs = [1, 4];
-        for (const i of priorityIPs) {
-          // Only check 192.168.4.x if it's not our current network
-          // (ESP32 default AP IP is 192.168.4.1)
-          if (baseIP !== '192.168.4') {
-            const ip = `192.168.4.${i}`;
-            console.log(`Checking priority IP: ${ip}`);
-            await this.tryConnectToDevice(ip);
+          const connected = await this.tryConnectToDevice(lastIP, macAddress);
+          if (connected) {
+            this.hasConnectedDevice = true;
+            break; // Stop scanning if we found our device
           }
         }
 
-        // Scan common IP ranges, but skip known router/gateway IPs
-        for (let i = 2; i <= 253; i++) {
-          // Skip common router/gateway IPs
-          if (skipIPs.includes(i)) continue;
-          
-          const ip = `${baseIP}.${i}`;
-          await this.tryConnectToDevice(ip);
+        // If we already found our device, skip further scanning
+        if (this.hasConnectedDevice) {
+          await new Promise(resolve => setTimeout(resolve, 30000)); // Wait 30s before next scan
+          continue;
+        }
+
+        // Only check AP mode IP if we haven't found our device and we're not on the AP network
+        if (!this.hasConnectedDevice && baseIP !== '192.168.4') {
+          console.log('No device found on local network, checking AP mode IP');
+          const connected = await this.tryConnectToDevice('192.168.4.1');
+          if (connected) {
+            this.hasConnectedDevice = true;
+          }
         }
 
       } catch (error) {
@@ -143,6 +146,24 @@ class DeviceConnectionService {
           if (macAddress) {
             this.lastKnownIPs.set(macAddress, ip);
             this.saveLastKnownIPs();
+
+            // Notify about found device
+            if (this.onDeviceFound) {
+              const deviceInfo = await this.getDeviceInfo(ip);
+              if (deviceInfo) {
+                const device = {
+                  id: deviceInfo.macAddress.replace(/:/g, '').slice(-6),
+                  name: `AquaSweeper-${deviceInfo.macAddress.replace(/:/g, '').slice(-6)}`,
+                  ipAddress: ip,
+                  macAddress: deviceInfo.macAddress,
+                  state: data.operatingState || 'stopped',
+                  status: 'online',
+                  addedAt: new Date().toISOString()
+                };
+                console.log('Device found, notifying context:', device);
+                this.onDeviceFound(device);
+              }
+            }
           }
           
           return true;

@@ -1,8 +1,8 @@
 import React, { createContext, useState, useContext, useEffect } from 'react';
 import { Alert } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import deviceCommunication from './deviceCommunication';
 import { useAuth } from './AuthContext';
+import deviceConnectionService from './DeviceConnectionService';
 
 const DeviceContext = createContext({});
 
@@ -14,82 +14,62 @@ export const DeviceProvider = ({ children }) => {
   const [batteryLevel, setBatteryLevel] = useState(null);
   const [loading, setLoading] = useState(true);
 
-  // Load saved device on startup
+  // Debug log for state changes
   useEffect(() => {
-    const loadSavedDevice = async () => {
+    console.log('DeviceContext - State Change:', {
+      hasDevice: !!currentDevice,
+      deviceIp: currentDevice?.ipAddress,
+      isConnected,
+      deviceState,
+      batteryLevel
+    });
+  }, [currentDevice, isConnected, deviceState, batteryLevel]);
+
+  // Initialize device connection service and set up callback
+  useEffect(() => {
+    const initializeDeviceService = async () => {
       try {
+        // Set up callback for when a device is found
+        deviceConnectionService.setDeviceFoundCallback((device) => {
+          console.log('DeviceContext - Device found callback:', device);
+          setCurrentDevice(device);
+          setIsConnected(true);
+          setDeviceState(device.state);
+        });
+
+        // Initialize the service
+        await deviceConnectionService.initialize();
+
+        // Load saved device
         const savedDeviceJson = await AsyncStorage.getItem('CURRENT_DEVICE');
         if (savedDeviceJson) {
           const device = JSON.parse(savedDeviceJson);
           console.log('Loading saved device:', device);
-          setCurrentDevice(device);
           
-          // Initialize device communication
-          if (device.ipAddress && user) {
-            console.log('Initializing device communication with IP:', device.ipAddress);
-            deviceCommunication.initialize(device.ipAddress, device.id || device.deviceId, user.email);
-            
-            // Set up status callback
-            deviceCommunication.onStatus((status) => {
-              console.log('Received status update:', status);
-              setDeviceState(status.state || 'stopped');
-              if (status.battery) {
-                setBatteryLevel(status.battery);
-              }
-              // If we receive a status update, we're definitely connected
-              setIsConnected(true);
-            });
-            
-            // Set up connection status callback
-            deviceCommunication.onConnectionStatus((connected) => {
-              console.log('Connection status changed:', connected);
-              setIsConnected(connected);
-              if (!connected) {
-                console.log('Lost connection to device');
-              }
-            });
-            
-            // Connect to the device
-            console.log('Attempting to connect to device...');
-            deviceCommunication.connect()
-              .then(connected => {
-                console.log('Initial connection attempt result:', connected);
-                if (!connected) {
-                  console.log('Initial connection failed, retrying in 5 seconds...');
-                  // Try again after a delay
-                  setTimeout(() => {
-                    console.log('Retrying connection...');
-                    deviceCommunication.connect()
-                      .then(retryConnected => {
-                        console.log('Retry connection result:', retryConnected);
-                      })
-                      .catch(error => {
-                        console.error('Error during retry connection:', error);
-                      });
-                  }, 5000);
-                }
-              })
-              .catch(error => {
-                console.error('Error connecting to device:', error);
-              });
+          // Update the last known IP in the connection service
+          if (device.ipAddress && device.macAddress) {
+            deviceConnectionService.lastKnownIPs.set(device.macAddress, device.ipAddress);
+            await deviceConnectionService.saveLastKnownIPs();
           }
+          
+          setCurrentDevice(device);
         }
       } catch (error) {
-        console.error('Error loading saved device:', error);
+        console.error('Error initializing device service:', error);
       } finally {
         setLoading(false);
       }
     };
 
     if (user) {
-      loadSavedDevice();
+      initializeDeviceService();
     } else {
       setLoading(false);
     }
 
-    // Clean up on unmount
+    // Cleanup callback on unmount
     return () => {
-      deviceCommunication.cleanup();
+      deviceConnectionService.setDeviceFoundCallback(null);
     };
   }, [user]);
 
@@ -118,24 +98,8 @@ export const DeviceProvider = ({ children }) => {
       };
       
       setCurrentDevice(enhancedDevice);
-      
-      // Initialize and connect to device
-      if (user) {
-        deviceCommunication.initialize(device.ipAddress, enhancedDevice.id, user.email);
-        const connected = await deviceCommunication.connect();
-        
-        if (!connected) {
-          Alert.alert(
-            'Connection Failed',
-            'Unable to connect to the device. Please check that the device is powered on and try again.',
-            [{ text: 'OK' }]
-          );
-        }
-        
-        return connected;
-      }
-      
-      return false;
+      setIsConnected(true);
+      return true;
     } catch (error) {
       console.error('Error connecting to device:', error);
       Alert.alert(
@@ -148,39 +112,35 @@ export const DeviceProvider = ({ children }) => {
   };
 
   const disconnectFromDevice = () => {
-    deviceCommunication.disconnect();
     setCurrentDevice(null);
     setIsConnected(false);
     setDeviceState('stopped');
     setBatteryLevel(null);
   };
 
-  const checkDeviceConnection = async () => {
-    if (!currentDevice || !currentDevice.ipAddress) {
-      return false;
-    }
-    
-    try {
-      const status = await deviceCommunication.getDeviceStatus();
-      return !!status;
-    } catch (error) {
-      console.error('Error checking device connection:', error);
-      return false;
-    }
-  };
-
   // Device control functions
   const startDevice = async () => {
+    if (!isConnected || !currentDevice?.ipAddress) {
+      console.log('Cannot start device: not connected');
+      return false;
+    }
+
     try {
-      if (!isConnected) {
-        console.log('Cannot start device: not connected');
-        return false;
+      const response = await fetch(`http://${currentDevice.ipAddress}/control`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Cache-Control': 'no-cache',
+          'Pragma': 'no-cache'
+        },
+        body: JSON.stringify({ numericCommand: 1 }) // 1 = start
+      });
+
+      if (!response.ok) {
+        throw new Error('Failed to start device');
       }
-      
-      console.log('Starting device...');
-      const result = await deviceCommunication.sendCommand('start');
-      console.log('Start device result:', result);
-      
+
+      const result = await response.json();
       if (result.success) {
         setDeviceState('running');
         return true;
@@ -193,16 +153,27 @@ export const DeviceProvider = ({ children }) => {
   };
 
   const stopDevice = async () => {
+    if (!isConnected || !currentDevice?.ipAddress) {
+      console.log('Cannot stop device: not connected');
+      return false;
+    }
+
     try {
-      if (!isConnected) {
-        console.log('Cannot stop device: not connected');
-        return false;
+      const response = await fetch(`http://${currentDevice.ipAddress}/control`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Cache-Control': 'no-cache',
+          'Pragma': 'no-cache'
+        },
+        body: JSON.stringify({ numericCommand: 0 }) // 0 = stop
+      });
+
+      if (!response.ok) {
+        throw new Error('Failed to stop device');
       }
-      
-      console.log('Stopping device...');
-      const result = await deviceCommunication.sendCommand('stop');
-      console.log('Stop device result:', result);
-      
+
+      const result = await response.json();
       if (result.success) {
         setDeviceState('stopped');
         return true;
@@ -215,16 +186,27 @@ export const DeviceProvider = ({ children }) => {
   };
 
   const pauseDevice = async () => {
+    if (!isConnected || !currentDevice?.ipAddress) {
+      console.log('Cannot pause device: not connected');
+      return false;
+    }
+
     try {
-      if (!isConnected) {
-        console.log('Cannot pause device: not connected');
-        return false;
+      const response = await fetch(`http://${currentDevice.ipAddress}/control`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Cache-Control': 'no-cache',
+          'Pragma': 'no-cache'
+        },
+        body: JSON.stringify({ numericCommand: 2 }) // 2 = pause
+      });
+
+      if (!response.ok) {
+        throw new Error('Failed to pause device');
       }
-      
-      console.log('Pausing device...');
-      const result = await deviceCommunication.sendCommand('pause');
-      console.log('Pause device result:', result);
-      
+
+      const result = await response.json();
       if (result.success) {
         setDeviceState('paused');
         return true;
@@ -246,10 +228,9 @@ export const DeviceProvider = ({ children }) => {
         loading,
         connectToDevice,
         disconnectFromDevice,
-        checkDeviceConnection,
         startDevice,
         stopDevice,
-        pauseDevice
+        pauseDevice,
       }}
     >
       {children}
@@ -257,6 +238,12 @@ export const DeviceProvider = ({ children }) => {
   );
 };
 
-export const useDevice = () => useContext(DeviceContext);
+export const useDevice = () => {
+  const context = useContext(DeviceContext);
+  if (!context) {
+    throw new Error('useDevice must be used within a DeviceProvider');
+  }
+  return context;
+};
 
 export default DeviceContext;

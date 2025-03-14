@@ -16,6 +16,7 @@ export const ThemeProvider = ({ children }) => {
       accent: '#FF9500',
       error: '#FF3B30',
       success: '#4CAF50',
+      warning: '#FFA500', // Amber color for warnings/pause state
       cardBackground: '#2d2d2d',
       inputText: '#ffffff',
       placeholderText: '#8e8e93',
@@ -31,6 +32,7 @@ export const ThemeProvider = ({ children }) => {
       accent: '#FF9500',
       error: '#FF3B30',
       success: '#4CAF50',
+      warning: '#FFA500', // Amber color for warnings/pause state
       cardBackground: '#ffffff',
       inputText: '#000000',
       placeholderText: '#8e8e93',
