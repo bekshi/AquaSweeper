@@ -1,10 +1,10 @@
-import React, { createContext, useState, useContext, useEffect } from 'react';
+import React, { createContext, useState, useContext, useEffect, useRef } from 'react';
 import { Alert } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useAuth } from './AuthContext';
 import deviceConnectionService from './DeviceConnectionService';
 
-const DeviceContext = createContext({});
+const DeviceContext = createContext();
 
 export const DeviceProvider = ({ children }) => {
   const { user } = useAuth();
@@ -13,17 +13,84 @@ export const DeviceProvider = ({ children }) => {
   const [deviceState, setDeviceState] = useState('stopped');
   const [batteryLevel, setBatteryLevel] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [elapsedTime, setElapsedTime] = useState(0);
+  const timerInterval = useRef(null);
+  const lastKnownElapsedTime = useRef(0);
+  const lastConnectionState = useRef(false);
 
   // Debug log for state changes
   useEffect(() => {
-    console.log('DeviceContext - State Change:', {
-      hasDevice: !!currentDevice,
-      deviceIp: currentDevice?.ipAddress,
-      isConnected,
+    console.log('DeviceContext - State updated:', {
       deviceState,
-      batteryLevel
+      isConnected,
+      batteryLevel,
+      elapsedTime
     });
-  }, [currentDevice, isConnected, deviceState, batteryLevel]);
+    
+    // Store the last known elapsed time
+    lastKnownElapsedTime.current = elapsedTime;
+  }, [deviceState, isConnected, batteryLevel, elapsedTime]);
+
+  // Handle connection state changes
+  useEffect(() => {
+    console.log('DeviceContext - Connection state changed:', isConnected);
+    
+    // If we're reconnecting after a disconnection
+    if (isConnected && !lastConnectionState.current) {
+      console.log('DeviceContext - Reconnected, last known elapsed time:', lastKnownElapsedTime.current);
+    }
+    
+    lastConnectionState.current = isConnected;
+  }, [isConnected]);
+
+  // Update timer when device state changes
+  useEffect(() => {
+    console.log('DeviceContext - Device state changed to:', deviceState);
+    
+    if (deviceState === 'running') {
+      startTimerTracking();
+    } else if (deviceState === 'paused') {
+      stopTimerTracking();
+    } else if (deviceState === 'stopped') {
+      stopTimerTracking();
+      setElapsedTime(0);
+      lastKnownElapsedTime.current = 0;
+    }
+    
+    return () => {
+      if (timerInterval.current) {
+        clearInterval(timerInterval.current);
+        timerInterval.current = null;
+      }
+    };
+  }, [deviceState]);
+
+  const startTimerTracking = () => {
+    if (timerInterval.current) return;
+    
+    console.log('DeviceContext - Starting timer tracking, current elapsed time:', elapsedTime);
+    timerInterval.current = setInterval(() => {
+      setElapsedTime(prevTime => {
+        const newTime = prevTime + 1;
+        lastKnownElapsedTime.current = newTime;
+        return newTime;
+      });
+    }, 1000);
+  };
+  
+  const stopTimerTracking = () => {
+    if (timerInterval.current) {
+      console.log('DeviceContext - Stopping timer tracking, final elapsed time:', elapsedTime);
+      clearInterval(timerInterval.current);
+      timerInterval.current = null;
+    }
+  };
+  
+  const updateElapsedTime = (time) => {
+    console.log('DeviceContext - Manually updating elapsed time to:', time);
+    setElapsedTime(time);
+    lastKnownElapsedTime.current = time;
+  };
 
   // Initialize device connection service and set up callback
   useEffect(() => {
@@ -119,9 +186,9 @@ export const DeviceProvider = ({ children }) => {
   };
 
   // Device control functions
-  const startDevice = async () => {
+  const sendCommand = async (command, newState) => {
     if (!isConnected || !currentDevice?.ipAddress) {
-      console.log('Cannot start device: not connected');
+      console.log('Cannot send command: not connected');
       return false;
     }
 
@@ -133,89 +200,38 @@ export const DeviceProvider = ({ children }) => {
           'Cache-Control': 'no-cache',
           'Pragma': 'no-cache'
         },
-        body: JSON.stringify({ numericCommand: 1 }) // 1 = start
+        body: JSON.stringify({ numericCommand: command })
       });
 
       if (!response.ok) {
-        throw new Error('Failed to start device');
+        throw new Error('Failed to send command');
       }
 
       const result = await response.json();
       if (result.success) {
-        setDeviceState('running');
+        // Update device state if command was successful
+        if (newState) {
+          setDeviceState(newState);
+        }
         return true;
       }
       return false;
     } catch (error) {
-      console.error('Error starting device:', error);
+      console.error('Error sending command:', error);
       return false;
     }
+  };
+
+  const startDevice = async () => {
+    return sendCommand(1, 'running'); // 1 = start
   };
 
   const stopDevice = async () => {
-    if (!isConnected || !currentDevice?.ipAddress) {
-      console.log('Cannot stop device: not connected');
-      return false;
-    }
-
-    try {
-      const response = await fetch(`http://${currentDevice.ipAddress}/control`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Cache-Control': 'no-cache',
-          'Pragma': 'no-cache'
-        },
-        body: JSON.stringify({ numericCommand: 0 }) // 0 = stop
-      });
-
-      if (!response.ok) {
-        throw new Error('Failed to stop device');
-      }
-
-      const result = await response.json();
-      if (result.success) {
-        setDeviceState('stopped');
-        return true;
-      }
-      return false;
-    } catch (error) {
-      console.error('Error stopping device:', error);
-      return false;
-    }
+    return sendCommand(0, 'stopped'); // 0 = stop
   };
 
   const pauseDevice = async () => {
-    if (!isConnected || !currentDevice?.ipAddress) {
-      console.log('Cannot pause device: not connected');
-      return false;
-    }
-
-    try {
-      const response = await fetch(`http://${currentDevice.ipAddress}/control`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Cache-Control': 'no-cache',
-          'Pragma': 'no-cache'
-        },
-        body: JSON.stringify({ numericCommand: 2 }) // 2 = pause
-      });
-
-      if (!response.ok) {
-        throw new Error('Failed to pause device');
-      }
-
-      const result = await response.json();
-      if (result.success) {
-        setDeviceState('paused');
-        return true;
-      }
-      return false;
-    } catch (error) {
-      console.error('Error pausing device:', error);
-      return false;
-    }
+    return sendCommand(2, 'paused'); // 2 = pause
   };
 
   return (
@@ -225,12 +241,17 @@ export const DeviceProvider = ({ children }) => {
         isConnected,
         deviceState,
         batteryLevel,
+        elapsedTime,
         loading,
         connectToDevice,
         disconnectFromDevice,
         startDevice,
         stopDevice,
         pauseDevice,
+        setDeviceState,
+        setBatteryLevel,
+        setIsConnected,
+        updateElapsedTime
       }}
     >
       {children}

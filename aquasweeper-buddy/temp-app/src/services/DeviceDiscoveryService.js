@@ -62,7 +62,7 @@ class DeviceDiscoveryService {
       if (!response.ok) return null;
       
       const data = await response.json();
-      if (data.type === 'AquaSweeper') {
+      if (data.deviceType === 'AquaSweeper') {
         console.log('Found device at:', ip);
         // Add IP to response if not present
         if (!data.ip) {

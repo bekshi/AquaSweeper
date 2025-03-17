@@ -65,15 +65,34 @@ const PulsingStatusIndicator = ({ status }) => {
 // Device Connection Status Component
 const DeviceConnectionStatus = () => {
   const { theme } = useTheme();
-  const { currentDevice } = useDevice();
+  const { 
+    currentDevice, 
+    setDeviceState, 
+    setBatteryLevel, 
+    setIsConnected,
+    deviceState: currentDeviceState,
+    elapsedTime
+  } = useDevice();
   const [deviceStatus, setDeviceStatus] = useState('disconnected');
   const [lastPing, setLastPing] = useState(null);
+  const lastDeviceState = useRef(null);
+  const wasConnected = useRef(false);
+  const reconnectionCount = useRef(0);
+
+  // Store the current device state for reconnection
+  useEffect(() => {
+    if (currentDeviceState) {
+      lastDeviceState.current = currentDeviceState;
+      console.log('DeviceConnectionStatus - Stored last device state:', lastDeviceState.current);
+    }
+  }, [currentDeviceState]);
 
   // Check device connection status
   useEffect(() => {
     if (!currentDevice?.ipAddress) {
       console.log('DeviceConnectionStatus - No device IP available');
       setDeviceStatus('disconnected');
+      setIsConnected(false);
       return;
     }
 
@@ -105,24 +124,118 @@ const DeviceConnectionStatus = () => {
           }
         };
         
-        // Try to connect to the device
+        // Try to connect to the device using status endpoint
         const response = await fetchWithTimeout(
-          `http://${currentDevice.ipAddress}/discover?nocache=${Date.now()}`, 
+          `http://${currentDevice.ipAddress}/status?nocache=${Date.now()}`, 
           {}, 
           3000
         );
         
         if (response.ok) {
-          console.log('DeviceConnectionStatus - Device connected');
+          // Parse the response to get device state and battery level
+          try {
+            const data = await response.json();
+            console.log('DeviceConnectionStatus - Status data:', data);
+            
+            // Check if this is a reconnection
+            const isReconnection = !wasConnected.current;
+            
+            if (isReconnection) {
+              reconnectionCount.current += 1;
+              console.log('DeviceConnectionStatus - Reconnection detected #', reconnectionCount.current);
+              
+              // If this is a reconnection and we had a previous state that was running or paused,
+              // keep that state instead of taking the one from the device
+              if (lastDeviceState.current && 
+                  (lastDeviceState.current === 'running' || lastDeviceState.current === 'paused')) {
+                console.log('DeviceConnectionStatus - Reconnected, preserving previous state:', 
+                  lastDeviceState.current, 'instead of device state:', data.operatingState);
+                
+                // Force the device to match our state
+                setDeviceState(lastDeviceState.current);
+                
+                // Send a command to the device to match our state
+                setTimeout(async () => {
+                  try {
+                    if (lastDeviceState.current === 'running' && data.operatingState !== 'running') {
+                      console.log('DeviceConnectionStatus - Sending start command to match our state');
+                      const startUrl = `http://${currentDevice.ipAddress}/control`;
+                      await fetch(startUrl, {
+                        method: 'POST',
+                        headers: {
+                          'Content-Type': 'application/json',
+                          'Cache-Control': 'no-cache',
+                          'Pragma': 'no-cache'
+                        },
+                        body: JSON.stringify({ numericCommand: 1 }) // 1 = start
+                      });
+                    } else if (lastDeviceState.current === 'paused' && data.operatingState !== 'paused') {
+                      console.log('DeviceConnectionStatus - Sending pause command to match our state');
+                      const pauseUrl = `http://${currentDevice.ipAddress}/control`;
+                      await fetch(pauseUrl, {
+                        method: 'POST',
+                        headers: {
+                          'Content-Type': 'application/json',
+                          'Cache-Control': 'no-cache',
+                          'Pragma': 'no-cache'
+                        },
+                        body: JSON.stringify({ numericCommand: 2 }) // 2 = pause
+                      });
+                    }
+                  } catch (error) {
+                    console.error('DeviceConnectionStatus - Error syncing device state:', error);
+                  }
+                }, 1000);
+              } else {
+                // Otherwise, take the state from the device
+                console.log('DeviceConnectionStatus - Setting device state to:', data.operatingState);
+                if (data.operatingState) {
+                  setDeviceState(data.operatingState);
+                  lastDeviceState.current = data.operatingState;
+                }
+              }
+            } else {
+              // Normal connection, just update the state if it's different
+              if (data.operatingState && data.operatingState !== currentDeviceState) {
+                console.log('DeviceConnectionStatus - Updating device state from:', 
+                  currentDeviceState, 'to:', data.operatingState);
+                setDeviceState(data.operatingState);
+                lastDeviceState.current = data.operatingState;
+              }
+            }
+            
+            // Update battery level in context if available
+            if (data.batteryLevel !== undefined) {
+              setBatteryLevel(data.batteryLevel);
+            }
+            
+            wasConnected.current = true;
+          } catch (error) {
+            console.error('DeviceConnectionStatus - Error parsing status response:', error);
+          }
+          
           setDeviceStatus('connected');
+          setIsConnected(true);
           setLastPing(Date.now());
         } else {
           console.log('DeviceConnectionStatus - Device not responding');
-          setDeviceStatus(lastPing && Date.now() - lastPing < 10000 ? 'reconnecting' : 'disconnected');
+          const newStatus = lastPing && Date.now() - lastPing < 10000 ? 'reconnecting' : 'disconnected';
+          setDeviceStatus(newStatus);
+          setIsConnected(false);
+          wasConnected.current = false;
+          
+          // We don't update the device state here, so the timer can continue if it was running
+          // This preserves the UI state even when connection is lost
         }
       } catch (error) {
         console.log('DeviceConnectionStatus - Connection error:', error.message);
-        setDeviceStatus(lastPing && Date.now() - lastPing < 10000 ? 'reconnecting' : 'disconnected');
+        const newStatus = lastPing && Date.now() - lastPing < 10000 ? 'reconnecting' : 'disconnected';
+        setDeviceStatus(newStatus);
+        setIsConnected(false);
+        wasConnected.current = false;
+        
+        // We don't update the device state here, so the timer can continue if it was running
+        // This preserves the UI state even when connection is lost
       }
     };
 
@@ -133,7 +246,7 @@ const DeviceConnectionStatus = () => {
     const interval = setInterval(checkConnection, 5000);
 
     return () => clearInterval(interval);
-  }, [currentDevice?.ipAddress, lastPing]);
+  }, [currentDevice?.ipAddress, lastPing, setDeviceState, setBatteryLevel, setIsConnected, currentDeviceState]);
 
   return (
     <View style={styles.connectionStatus}>
@@ -155,9 +268,12 @@ const HomeScreen = () => {
     startDevice, 
     stopDevice, 
     pauseDevice,
+    isConnected,
+    elapsedTime
   } = useDevice();
 
   const [sessionStartTime, setSessionStartTime] = useState(null);
+  const pulseAnim = useRef(new Animated.Value(1)).current;
 
   // Debug logs for device state
   useEffect(() => {
@@ -168,89 +284,37 @@ const HomeScreen = () => {
         name: currentDevice.name,
         ipAddress: currentDevice.ipAddress
       } : null,
-      batteryLevel
+      batteryLevel,
+      elapsedTime
     });
-  }, [deviceState, currentDevice, batteryLevel]);
-  
-  const isRunning = deviceState === 'running';
-  const isPaused = deviceState === 'paused';
-  const elapsedTime = useRef(0);
-  const pulseAnim = useRef(new Animated.Value(1)).current;
-  const timerInterval = useRef(null);
+  }, [deviceState, currentDevice, batteryLevel, elapsedTime]);
 
+  // Start or stop the pulse animation based on device state
   useEffect(() => {
-    // Start or stop the timer based on device state
-    if (isRunning) {
-      startTimer();
+    console.log('Device state changed:', deviceState);
+    
+    // Start or stop the animation based on device state
+    if (deviceState === 'running') {
+      console.log('Starting pulse animation because device is running');
       startPulseAnimation();
-    } else if (isPaused) {
-      stopTimer();
-      pulseAnim.setValue(1);
     } else {
-      stopTimer();
-      elapsedTime.current = 0;
+      console.log('Stopping pulse animation because device is not running');
       pulseAnim.setValue(1);
     }
-
-    return () => {
-      stopTimer();
-    };
   }, [deviceState]);
 
-  // For development: Debug device info in more detail
+  // Separate effect to handle connection status changes
   useEffect(() => {
-    if (currentDevice) {
-      console.log('======= CURRENT DEVICE DETAILS =======');
-      console.log('Device ID:', currentDevice.id || currentDevice.deviceId);
-      console.log('Device Name:', currentDevice.name);
-      console.log('Device IP Address:', currentDevice.ipAddress);
-      console.log('Device Keys:', Object.keys(currentDevice));
-      console.log('======================================');
-    } else {
-      console.log('No current device available');
-    }
-  }, [currentDevice]);
-
-  // For development: Debug device info
-  useEffect(() => {
-    console.log('======= HOME SCREEN DEBUG =======');
-    console.log(`Device State: ${deviceState}`);
-    console.log(`Current Device: ${JSON.stringify(currentDevice)}`);
-    console.log(`Battery Level: ${batteryLevel}`);
-    console.log('================================');
-  }, [deviceState, currentDevice, batteryLevel]);
-
-  // Update session start time when device starts running
-  useEffect(() => {
-    if (isRunning && !sessionStartTime) {
-      setSessionStartTime(new Date());
-    } else if (!isRunning && !isPaused) {
-      setSessionStartTime(null);
-    }
-  }, [isRunning, isPaused]);
-
-  const startTimer = () => {
-    if (timerInterval.current) return;
-    
-    timerInterval.current = setInterval(() => {
-      elapsedTime.current += 1;
-      // Force re-render
-      forceUpdate();
-    }, 1000);
-  };
-
-  const stopTimer = () => {
-    if (timerInterval.current) {
-      clearInterval(timerInterval.current);
-      timerInterval.current = null;
-    }
-  };
+    // Log connection status changes
+    console.log('Connection status changed:', isConnected ? 'Connected' : 'Disconnected');
+    console.log('Current device state:', deviceState);
+  }, [isConnected]);
 
   const startPulseAnimation = () => {
     Animated.loop(
       Animated.sequence([
         Animated.timing(pulseAnim, {
-          toValue: 1.2,
+          toValue: 1.1,
           duration: 1000,
           useNativeDriver: true,
         }),
@@ -263,10 +327,6 @@ const HomeScreen = () => {
     ).start();
   };
 
-  // Force re-render hack (for timer updates)
-  const [, updateState] = React.useState();
-  const forceUpdate = React.useCallback(() => updateState({}), []);
-
   const formatTime = (seconds) => {
     const hrs = Math.floor(seconds / 3600);
     const mins = Math.floor((seconds % 3600) / 60);
@@ -274,29 +334,124 @@ const HomeScreen = () => {
     return `${hrs.toString().padStart(2, '0')}:${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
   };
 
-  const logCleaningSession = async (duration) => {
-    if (!user || !currentDevice || !sessionStartTime) return;
+  const logCleaningSession = async () => {
+    if (!user || !currentDevice) return;
     
     try {
-      const endTime = new Date();
-      const userSkimmersRef = collection(db, 'users', user.uid, 'skimmers');
-      const skimmerRef = doc(userSkimmersRef, currentDevice.id);
-      const sessionsRef = collection(skimmerRef, 'cleaningSessions');
-      
-      await addDoc(sessionsRef, {
-        startTime: sessionStartTime,
-        endTime: endTime,
-        duration: duration,
-        deviceId: currentDevice.id,
+      console.log('Logging cleaning session with duration:', elapsedTime);
+      const sessionData = {
+        userId: user.uid,
+        deviceId: currentDevice.id || currentDevice.deviceId,
         deviceName: currentDevice.name,
-        batteryLevel: batteryLevel,
-        status: 'completed',
-        userId: user.uid // Add user ID for additional security
-      });
+        startTime: sessionStartTime,
+        endTime: new Date(),
+        durationSeconds: elapsedTime,
+        timestamp: new Date()
+      };
       
+      const userSessionsRef = collection(db, 'users', user.uid, 'cleaningSessions');
+      await addDoc(userSessionsRef, sessionData);
       console.log('Cleaning session logged successfully');
     } catch (error) {
       console.error('Error logging cleaning session:', error);
+    }
+  };
+
+  const handleStartPress = async () => {
+    if (!isConnected) {
+      Alert.alert('Device Disconnected', 'Cannot start device while disconnected.');
+      return;
+    }
+    
+    if (deviceState === 'running') {
+      Alert.alert('Device Already Running', 'The device is already running.');
+      return;
+    }
+    
+    console.log('Sending start command to device');
+    const success = await startDevice();
+    
+    if (success) {
+      console.log('Device started successfully');
+      // If we're starting from a paused state, don't reset the session start time
+      if (!sessionStartTime) {
+        setSessionStartTime(new Date());
+      }
+    } else {
+      console.log('Failed to start device');
+      Alert.alert('Error', 'Failed to start device. Please try again.');
+    }
+  };
+
+  const handleStopPress = async () => {
+    if (!isConnected) {
+      Alert.alert('Device Disconnected', 'Cannot stop device while disconnected.');
+      return;
+    }
+    
+    if (deviceState === 'stopped') {
+      Alert.alert('Device Already Stopped', 'The device is already stopped.');
+      return;
+    }
+    
+    console.log('Sending stop command to device');
+    const success = await stopDevice();
+    
+    if (success) {
+      console.log('Device stopped successfully');
+      
+      // Log the cleaning session before resetting the timer
+      if (sessionStartTime) {
+        logCleaningSession();
+      }
+      Alert.alert('Run Completed', 'Your cleaning session has been logged.', [{ text: 'OK' }]);
+    } else {
+      console.log('Failed to stop device');
+      Alert.alert('Error', 'Failed to stop device. Please try again.');
+    }
+  };
+
+  const handlePausePress = async () => {
+    if (!isConnected) {
+      Alert.alert('Device Disconnected', 'Cannot pause device while disconnected.');
+      return;
+    }
+    
+    if (deviceState !== 'running') {
+      Alert.alert('Device Not Running', 'Cannot pause device that is not running.');
+      return;
+    }
+    
+    console.log('Sending pause command to device');
+    const success = await pauseDevice();
+    
+    if (success) {
+      console.log('Device paused successfully');
+    } else {
+      console.log('Failed to pause device');
+      Alert.alert('Error', 'Failed to pause device. Please try again.');
+    }
+  };
+
+  const handleResumePress = async () => {
+    if (!isConnected) {
+      Alert.alert('Device Disconnected', 'Cannot resume device while disconnected.');
+      return;
+    }
+    
+    if (deviceState !== 'paused') {
+      Alert.alert('Device Not Paused', 'Cannot resume device that is not paused.');
+      return;
+    }
+    
+    console.log('Sending resume command to device');
+    const success = await startDevice();
+    
+    if (success) {
+      console.log('Device resumed successfully');
+    } else {
+      console.log('Failed to resume device');
+      Alert.alert('Error', 'Failed to resume device. Please try again.');
     }
   };
 
@@ -306,26 +461,19 @@ const HomeScreen = () => {
       return;
     }
 
-    if (isRunning) {
-      pauseDevice()
-        .then(success => {
-          if (!success) {
-            Alert.alert('Error', 'Failed to pause device');
-          }
-        })
-        .catch(error => {
-          Alert.alert('Error', `Failed to pause device: ${error.message}`);
-        });
+    if (!isConnected) {
+      Alert.alert(
+        "Device Disconnected",
+        "Cannot control device because it is currently disconnected. Please wait for the device to reconnect.",
+        [{ text: "OK" }]
+      );
+      return;
+    }
+
+    if (deviceState === 'running') {
+      handlePausePress();
     } else {
-      startDevice()
-        .then(success => {
-          if (!success) {
-            Alert.alert('Error', 'Failed to start device');
-          }
-        })
-        .catch(error => {
-          Alert.alert('Error', `Failed to start device: ${error.message}`);
-        });
+      handleStartPress();
     }
   };
 
@@ -335,8 +483,17 @@ const HomeScreen = () => {
       return;
     }
 
+    if (!isConnected) {
+      Alert.alert(
+        "Device Disconnected",
+        "Cannot stop device because it is currently disconnected. Please wait for the device to reconnect.",
+        [{ text: "OK" }]
+      );
+      return;
+    }
+
     Alert.alert(
-      "End Current Run",
+      "End Run",
       "Are you sure you want to end the current run?",
       [
         {
@@ -345,28 +502,58 @@ const HomeScreen = () => {
         },
         {
           text: "Yes",
-          onPress: () => {
-            stopDevice()
-              .then(success => {
-                if (!success) {
-                  Alert.alert('Error', 'Failed to stop device');
-                } else {
-                  // Log the cleaning session before resetting the timer
-                  if (sessionStartTime) {
-                    logCleaningSession(elapsedTime.current);
-                  }
-                  elapsedTime.current = 0;
-                  Alert.alert('Run Completed', 'Your cleaning session has been logged.', [{ text: 'OK' }]);
-                }
-              })
-              .catch(error => {
-                Alert.alert('Error', `Failed to stop device: ${error.message}`);
-              });
-          }
+          onPress: () => handleStopPress()
         }
       ]
     );
   };
+
+  useEffect(() => {
+    if (deviceState === 'running' && !sessionStartTime) {
+      setSessionStartTime(new Date());
+    } else if (deviceState !== 'running' && deviceState !== 'paused') {
+      setSessionStartTime(null);
+    }
+  }, [deviceState]);
+
+  useEffect(() => {
+    const fetchDeviceInfo = async () => {
+      if (!currentDevice?.ipAddress) return;
+      
+      try {
+        console.log('Fetching device info from:', currentDevice.ipAddress);
+        const response = await fetch(`http://${currentDevice.ipAddress}/info?nocache=${Date.now()}`, {
+          headers: {
+            'Cache-Control': 'no-cache',
+            'Pragma': 'no-cache'
+          }
+        });
+        
+        if (response.ok) {
+          const data = await response.json();
+          console.log('Device info received:', data);
+          // This will help debugging what fields are available
+        }
+      } catch (error) {
+        console.error('Error fetching device info:', error);
+      }
+    };
+    
+    fetchDeviceInfo();
+  }, [currentDevice?.ipAddress]);
+
+  useEffect(() => {
+    if (currentDevice) {
+      console.log('======= CURRENT DEVICE DETAILS =======');
+      console.log('Device ID:', currentDevice.id || currentDevice.deviceId);
+      console.log('Device Name:', currentDevice.name);
+      console.log('Device IP Address:', currentDevice.ipAddress);
+      console.log('Device Keys:', Object.keys(currentDevice));
+      console.log('======================================');
+    } else {
+      console.log('No current device available');
+    }
+  }, [currentDevice]);
 
   return (
     <SafeAreaView style={[styles.container, { backgroundColor: theme.background }]}>
@@ -397,14 +584,14 @@ const HomeScreen = () => {
             </View>
             <View style={styles.statusContainer}>
               <View style={[styles.statusDot, { 
-                backgroundColor: isRunning 
+                backgroundColor: deviceState === 'running' 
                   ? theme.success 
-                  : isPaused 
+                  : deviceState === 'paused' 
                     ? theme.warning
                     : theme.textSecondary 
               }]} />
               <Text style={[styles.statusText, { color: theme.text }]}>
-                {isRunning ? 'Running' : isPaused ? 'Paused' : 'Stopped'}
+                {deviceState === 'running' ? 'Running' : deviceState === 'paused' ? 'Paused' : 'Stopped'}
               </Text>
             </View>
           </View>
@@ -413,16 +600,16 @@ const HomeScreen = () => {
           <View style={styles.timerContainer}>
             <Animated.View style={[styles.timerCircle, 
               { 
-                borderColor: isRunning 
+                borderColor: deviceState === 'running' 
                   ? theme.success 
-                  : isPaused 
+                  : deviceState === 'paused' 
                     ? theme.warning
                     : theme.primary,
-                transform: [{ scale: isRunning ? pulseAnim : 1 }]
+                transform: [{ scale: deviceState === 'running' ? pulseAnim : 1 }]
               }
             ]}>
               <Text style={[styles.timerText, { color: theme.text }]}>
-                {formatTime(elapsedTime.current)}
+                {formatTime(elapsedTime)}
               </Text>
               <Text style={[styles.timerLabel, { color: theme.textSecondary }]}>Current Run Time</Text>
             </Animated.View>
@@ -434,38 +621,38 @@ const HomeScreen = () => {
               style={[
                 styles.button,
                 { 
-                  backgroundColor: isRunning 
+                  backgroundColor: deviceState === 'running' 
                     ? theme.warning
-                    : isPaused 
+                    : deviceState === 'paused' 
                       ? theme.success 
                       : theme.primary,
-                  opacity: currentDevice ? 1 : 0.5
+                  opacity: isConnected ? 1 : 0.5
                 }
               ]}
               onPress={handleToggleRun}
-              disabled={!currentDevice}
+              disabled={!isConnected}
             >
               <MaterialCommunityIcons
-                name={isRunning ? "pause" : "play"}
+                name={deviceState === 'running' ? "pause" : "play"}
                 size={24}
                 color="#fff"
               />
               <Text style={styles.buttonText}>
-                {isRunning ? 'Pause' : isPaused ? 'Resume' : 'Start'}
+                {deviceState === 'running' ? 'Pause' : deviceState === 'paused' ? 'Resume' : 'Start'}
               </Text>
             </TouchableOpacity>
 
-            {(isRunning || isPaused || elapsedTime.current > 0) && (
+            {(deviceState === 'running' || deviceState === 'paused' || elapsedTime > 0) && (
               <TouchableOpacity
                 style={[
                   styles.button, 
                   { 
                     backgroundColor: theme.error,
-                    opacity: currentDevice ? 1 : 0.5
+                    opacity: isConnected ? 1 : 0.5
                   }
                 ]}
                 onPress={handleEndRun}
-                disabled={!currentDevice}
+                disabled={!isConnected}
               >
                 <MaterialCommunityIcons name="stop" size={24} color="#fff" />
                 <Text style={styles.buttonText}>End Run</Text>
@@ -581,6 +768,9 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: '600',
     marginLeft: 8,
+  },
+  disabledButton: {
+    opacity: 0.5,
   },
 });
 

@@ -16,6 +16,7 @@ import { doc, updateDoc, deleteDoc, arrayUnion, arrayRemove, getDoc, onSnapshot 
 import { db } from '../services/firebase';
 import deviceConnectionService from '../services/DeviceConnectionService';
 import { useFocusEffect } from '@react-navigation/native';
+import { useAuth } from '../services/AuthContext';
 
 const StatusIndicator = ({ status }) => {
   const pulseAnim = React.useRef(new Animated.Value(1)).current;
@@ -79,13 +80,15 @@ const DeviceInfo = ({ label, value }) => {
 
 const DeviceDetailsScreen = ({ route, navigation }) => {
   const { theme } = useTheme();
+  const { user } = useAuth();
   const { device } = route.params;
-  const [deviceName, setDeviceName] = useState(device.deviceName || 'Unnamed Device');
+  const [deviceName, setDeviceName] = useState(device.name || device.deviceName || 'Unnamed Device');
   const [isEditing, setIsEditing] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [deviceData, setDeviceData] = useState(device);
   const [refreshing, setRefreshing] = useState(false);
   const [lastUpdated, setLastUpdated] = useState(new Date());
+  const [isLoading, setIsLoading] = useState(false);
 
   // Setup real-time monitoring when screen is focused
   useFocusEffect(
@@ -97,14 +100,19 @@ const DeviceDetailsScreen = ({ route, navigation }) => {
         deviceConnectionService.startMonitoring(device);
 
         // Set up real-time listener for device updates
-        const userRef = doc(db, 'users', device.userId);
+        if (!user?.uid) {
+          console.error('No user ID available for device monitoring');
+          return;
+        }
+        
+        const userRef = doc(db, 'users', user.uid);
         unsubscribe = onSnapshot(userRef, (doc) => {
           if (doc.exists()) {
             const userData = doc.data();
             const updatedDevice = userData.connectedDevices?.find(d => d.macAddress === device.macAddress);
             if (updatedDevice) {
               setDeviceData(updatedDevice);
-              setDeviceName(updatedDevice.deviceName);
+              setDeviceName(updatedDevice.name || updatedDevice.deviceName || 'Unnamed Device');
               setLastUpdated(new Date());
             }
           }
@@ -118,7 +126,7 @@ const DeviceDetailsScreen = ({ route, navigation }) => {
         if (unsubscribe) unsubscribe();
         deviceConnectionService.stopMonitoring(device);
       };
-    }, [device])
+    }, [device, user])
   );
 
   const onRefresh = useCallback(async () => {
@@ -138,9 +146,14 @@ const DeviceDetailsScreen = ({ route, navigation }) => {
       return;
     }
 
+    if (!user?.uid) {
+      Alert.alert('Error', 'No user ID available');
+      return;
+    }
+
     setIsSaving(true);
     try {
-      const userRef = doc(db, 'users', device.userId);
+      const userRef = doc(db, 'users', user.uid);
       const userDoc = await getDoc(userRef);
       
       if (userDoc.exists()) {
@@ -148,7 +161,11 @@ const DeviceDetailsScreen = ({ route, navigation }) => {
         const devices = userData.connectedDevices || [];
         const updatedDevices = devices.map(d => {
           if (d.macAddress === device.macAddress) {
-            return { ...d, deviceName: deviceName.trim() };
+            return { 
+              ...d, 
+              name: deviceName.trim(),
+              deviceName: deviceName.trim() 
+            };
           }
           return d;
         });
@@ -157,7 +174,11 @@ const DeviceDetailsScreen = ({ route, navigation }) => {
           connectedDevices: updatedDevices
         });
         
-        setDeviceData(prev => ({ ...prev, deviceName: deviceName.trim() }));
+        setDeviceData(prev => ({ 
+          ...prev, 
+          name: deviceName.trim(),
+          deviceName: deviceName.trim() 
+        }));
         setIsEditing(false);
       }
     } catch (error) {
@@ -169,6 +190,11 @@ const DeviceDetailsScreen = ({ route, navigation }) => {
   };
 
   const handleRemoveDevice = async () => {
+    if (!user?.uid) {
+      Alert.alert('Error', 'No user ID available');
+      return;
+    }
+
     Alert.alert(
       'Remove Device',
       'Are you sure you want to remove this device? This action cannot be undone.',
@@ -183,24 +209,86 @@ const DeviceDetailsScreen = ({ route, navigation }) => {
           onPress: async () => {
             try {
               // Remove device from user's connectedDevices array in Firestore
-              const userRef = doc(db, 'users', device.userId);
-              await updateDoc(userRef, {
-                connectedDevices: arrayRemove({
-                  ipAddress: device.ipAddress,
-                  macAddress: device.macAddress,
-                  deviceName: device.deviceName,
-                  addedAt: device.addedAt
-                })
-              });
+              const userRef = doc(db, 'users', user.uid);
+              
+              // Get the current devices
+              const userDoc = await getDoc(userRef);
+              if (userDoc.exists()) {
+                const userData = userDoc.data();
+                const devices = userData.connectedDevices || [];
+                
+                // Filter out the device to remove
+                const updatedDevices = devices.filter(d => 
+                  d.macAddress !== device.macAddress
+                );
+                
+                // Update with the filtered list
+                await updateDoc(userRef, {
+                  connectedDevices: updatedDevices
+                });
+                
+                // Stop monitoring this device
+                deviceConnectionService.stopMonitoring(device);
 
-              // Stop monitoring this device
-              deviceConnectionService.stopMonitoring(device);
-
-              // Navigate back to settings screen
-              navigation.navigate('Settings');
+                // Navigate back instead of to a specific screen
+                navigation.goBack();
+              }
             } catch (error) {
               console.error('Error removing device:', error);
               Alert.alert('Error', 'Failed to remove device. Please try again.');
+            }
+          }
+        }
+      ]
+    );
+  };
+
+  const handleFactoryReset = async () => {
+    Alert.alert(
+      'Factory Reset Device',
+      'This will reset the device to factory settings and clear all WiFi credentials. The device will restart and you will need to reconfigure it. Are you sure?',
+      [
+        {
+          text: 'Cancel',
+          style: 'cancel'
+        },
+        {
+          text: 'Reset',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              setIsLoading(true);
+              
+              // Send factory reset command to device
+              const response = await fetch(`http://${deviceData.ipAddress}/factory-reset`, {
+                method: 'POST',
+                headers: {
+                  'Content-Type': 'application/json',
+                }
+              });
+              
+              if (response.ok) {
+                // Also remove the device from Firestore
+                await handleRemoveDevice();
+                
+                Alert.alert(
+                  'Device Reset',
+                  'The device has been reset to factory settings and removed from your account. You will need to reconfigure it.',
+                  [
+                    {
+                      text: 'OK',
+                      onPress: () => navigation.goBack()
+                    }
+                  ]
+                );
+              } else {
+                throw new Error('Failed to reset device');
+              }
+            } catch (error) {
+              console.error('Error resetting device:', error);
+              Alert.alert('Error', 'Failed to reset device. Make sure you are connected to the device.');
+            } finally {
+              setIsLoading(false);
             }
           }
         }
@@ -265,6 +353,15 @@ const DeviceDetailsScreen = ({ route, navigation }) => {
             <MaterialCommunityIcons name="delete" size={20} color={theme.error} />
             <Text style={[styles.removeButtonText, { color: theme.error }]}>
               Remove Device
+            </Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={[styles.removeButton, { borderColor: theme.error }]}
+            onPress={handleFactoryReset}
+          >
+            <MaterialCommunityIcons name="restart" size={20} color={theme.error} />
+            <Text style={[styles.removeButtonText, { color: theme.error }]}>
+              Factory Reset
             </Text>
           </TouchableOpacity>
         </View>

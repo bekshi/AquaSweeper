@@ -18,7 +18,7 @@ bool isConfigured = false;
 bool isConnectingToWiFi = false;
 bool shouldTryWiFiConnection = false;
 unsigned long wifiConnectStartTime = 0;
-unsigned long lastWiFiStatus = WL_IDLE_STATUS;
+wl_status_t lastWiFiStatus = WL_IDLE_STATUS;
 
 // Device state variables
 bool isRunning = false;
@@ -30,6 +30,35 @@ bool ledState = false;
 
 char wifiSSID[32];
 char wifiPassword[64];
+
+unsigned long lastAPCheckTime = 0;
+
+const int WIFI_CONNECT_TIMEOUT = 30000; // 30 seconds
+
+void updateBatteryLevel() {
+  // For demo purposes, return a value between 0 and 100
+  static int batteryLevel = 100;
+  static unsigned long lastBatteryUpdate = 0;
+  
+  // Update battery level every 60 seconds
+  if (millis() - lastBatteryUpdate > 60000) {
+    // Decrease battery by 1-3% randomly
+    int decrease = random(1, 4);
+    batteryLevel -= decrease;
+    
+    // Ensure battery level doesn't go below 0
+    if (batteryLevel < 0) {
+      batteryLevel = 0;
+    }
+    
+    // Reset battery to 100% if it gets too low (simulating a charge)
+    if (batteryLevel < 10) {
+      batteryLevel = 100;
+    }
+    
+    lastBatteryUpdate = millis();
+  }
+}
 
 String getDeviceId() {
   uint8_t mac[6];
@@ -136,17 +165,63 @@ void writeWiFiCredentials(String ssid, String password) {
   isConfigured = true;
 }
 
+void clearStoredWiFiCredentials() {
+  // Clear the area
+  for (int i = 0; i < 32; i++) {
+    EEPROM.write(WIFI_SSID_ADDR + i, 0);
+  }
+  for (int i = 0; i < 64; i++) {
+    EEPROM.write(WIFI_PASS_ADDR + i, 0);
+  }
+  EEPROM.write(CONFIG_FLAG_ADDR, 0);
+  EEPROM.commit();
+
+  // Update stored values
+  storedSSID = "";
+  storedPassword = "";
+  isConfigured = false;
+}
+
 void connectToWiFi() {
-  if (storedSSID.length() == 0) {
+  // Make sure we have credentials to connect with
+  if (storedSSID.length() == 0 && strlen(wifiSSID) == 0) {
     Serial.println("No WiFi credentials available");
+    shouldTryWiFiConnection = false;
     return;
   }
 
-  Serial.println("Attempting to connect to WiFi: " + storedSSID);
-  WiFi.begin(storedSSID.c_str(), storedPassword.c_str());
+  // Prefer the credentials from wifiSSID/wifiPassword if available
+  // as they might be newer than what's in storedSSID/storedPassword
+  const char* ssidToUse = strlen(wifiSSID) > 0 ? wifiSSID : storedSSID.c_str();
+  const char* passwordToUse = strlen(wifiPassword) > 0 ? wifiPassword : storedPassword.c_str();
+  
+  Serial.println("Attempting to connect to WiFi: " + String(ssidToUse));
+  
+  // Disconnect from any existing connection first
+  WiFi.disconnect();
+  delay(100);
+  
+  // Ensure we're in AP+STA mode to maintain the AP while connecting to WiFi
+  WiFi.mode(WIFI_AP_STA);
+  delay(100);
+  
+  // Start the connection attempt
+  WiFi.begin(ssidToUse, passwordToUse);
+  Serial.println("WiFi connection attempt started");
+  
+  // Update state variables
   isConnectingToWiFi = true;
   wifiConnectStartTime = millis();
   shouldTryWiFiConnection = false;
+  lastWiFiStatus = WL_IDLE_STATUS;
+  
+  // Update stored credentials if we're using temporary ones
+  if (strlen(wifiSSID) > 0 && strcmp(wifiSSID, storedSSID.c_str()) != 0) {
+    Serial.println("Updating stored credentials with new ones");
+    writeWiFiCredentials(wifiSSID, wifiPassword);
+    // Reload the stored credentials
+    readWiFiCredentials();
+  }
 }
 
 void addCORSHeaders() {
@@ -203,6 +278,7 @@ void handleDiscover() {
 }
 
 void handleWiFiConfig() {
+  Serial.println("Received WiFi configuration request");
   addCORSHeaders();
   
   if (server.hasArg("plain")) {
@@ -211,7 +287,9 @@ void handleWiFiConfig() {
     DeserializationError error = deserializeJson(doc, json);
     
     if (error) {
-      server.send(400, "application/json", "{\"success\":false,\"message\":\"Invalid JSON\"}");
+      Serial.print("JSON parsing error: ");
+      Serial.println(error.c_str());
+      server.send(400, "application/json", "{\"success\":false,\"message\":\"Invalid JSON: " + String(error.c_str()) + "\"}");
       return;
     }
 
@@ -219,21 +297,47 @@ void handleWiFiConfig() {
     const char* password = doc["password"];
     
     if (!ssid || !password) {
+      Serial.println("Missing SSID or password in request");
       server.send(400, "application/json", "{\"success\":false,\"message\":\"Missing SSID or password\"}");
       return;
     }
 
-    // Store credentials and send success response immediately
+    Serial.print("Received WiFi configuration request for SSID: ");
+    Serial.println(ssid);
+    
+    // Store credentials in EEPROM first
+    writeWiFiCredentials(ssid, password);
+    
+    // Also store in temporary variables for immediate use
     strlcpy(wifiSSID, ssid, sizeof(wifiSSID));
     strlcpy(wifiPassword, password, sizeof(wifiPassword));
-    shouldTryWiFiConnection = true;
     
-    server.send(200, "application/json", "{\"success\":true}");
+    // Set configured flag
+    isConfigured = true;
     
-    // Start WiFi connection in the background
-    WiFi.disconnect();
-    WiFi.begin(wifiSSID, wifiPassword);
+    // Switch to AP+STA mode
+    WiFi.mode(WIFI_AP_STA);
+    delay(200);
+    
+    // Create a more detailed response
+    String responseJson = "{";
+    responseJson += "\"success\":true,";
+    responseJson += "\"message\":\"WiFi credentials saved and connection attempt started\",";
+    responseJson += "\"ssid\":\"" + String(ssid) + "\",";
+    responseJson += "\"apIP\":\"" + WiFi.softAPIP().toString() + "\",";
+    responseJson += "\"macAddress\":\"" + WiFi.macAddress() + "\"";
+    responseJson += "}";
+    
+    // Send success response
+    Serial.print("Sending response: ");
+    Serial.println(responseJson);
+    server.send(200, "application/json", responseJson);
+    
+    // Trigger WiFi connection attempt after sending the response
+    Serial.println("WiFi configuration successful, starting connection attempt");
+    connectToWiFi();
   } else {
+    Serial.println("No data received in WiFi configuration request");
     server.send(400, "application/json", "{\"success\":false,\"message\":\"No data received\"}");
   }
 }
@@ -242,16 +346,44 @@ void handleDeviceInfo() {
   addCORSHeaders();
   
   String deviceId = getDeviceId();
+  bool isWifiConnected = WiFi.status() == WL_CONNECTED;
+  
+  // Get the correct IP address
+  String ipAddress = "";
+  if (isWifiConnected) {
+    ipAddress = WiFi.localIP().toString();
+    Serial.print("Connected to WiFi. Local IP: ");
+    Serial.println(ipAddress);
+  } else {
+    ipAddress = WiFi.softAPIP().toString();
+    Serial.print("Not connected to WiFi. AP IP: ");
+    Serial.println(ipAddress);
+  }
   
   String json = "{";
   json += "\"deviceId\":\"" + deviceId + "\",";
   json += "\"deviceName\":\"AquaSweeper-" + deviceId + "\",";
   json += "\"firmwareVersion\":\"1.0.0\",";
-  json += "\"ipAddress\":\"" + WiFi.localIP().toString() + "\",";
+  json += "\"ipAddress\":\"" + ipAddress + "\",";
   json += "\"macAddress\":\"" + WiFi.macAddress() + "\",";
   json += "\"apSSID\":\"" + String(deviceName) + "\",";
   json += "\"isConfigured\":" + String(isConfigured ? "true" : "false") + ",";
-  json += "\"connectedToWiFi\":" + String(WiFi.status() == WL_CONNECTED ? "true" : "false");
+  json += "\"connectedToWiFi\":" + String(isWifiConnected ? "true" : "false") + ",";
+  
+  // Add more detailed WiFi information
+  if (isWifiConnected) {
+    json += "\"wifiSSID\":\"" + WiFi.SSID() + "\",";
+    json += "\"wifiRSSI\":" + String(WiFi.RSSI()) + ",";
+    json += "\"wifiMode\":\"station\"";
+  } else if (isConnectingToWiFi) {
+    json += "\"wifiStatus\":\"connecting\",";
+    json += "\"wifiSSID\":\"" + String(strlen(wifiSSID) > 0 ? wifiSSID : storedSSID.c_str()) + "\",";
+    json += "\"wifiMode\":\"connecting\"";
+  } else {
+    json += "\"wifiStatus\":\"ap_only\",";
+    json += "\"wifiMode\":\"ap\"";
+  }
+  
   json += "}";
   
   server.send(200, "application/json", json);
@@ -261,12 +393,37 @@ void handleDeviceInfo() {
 void handleDeviceStatus() {
   addCORSHeaders();
   
-  String json = "{";
-  json += "\"isRunning\":" + String(isRunning) + ",";
-  json += "\"isPaused\":" + String(isPaused) + ",";
-  json += "\"operatingState\":\"" + operatingState + "\",";
-  json += "\"batteryLevel\":" + String(getBatteryLevel());
-  json += "}";
+  bool isWifiConnected = WiFi.status() == WL_CONNECTED;
+  
+  // Get the correct IP address
+  String ipAddress = "";
+  if (isWifiConnected) {
+    ipAddress = WiFi.localIP().toString();
+    Serial.print("Status endpoint - Connected to WiFi. Local IP: ");
+    Serial.println(ipAddress);
+  } else {
+    ipAddress = WiFi.softAPIP().toString();
+    Serial.print("Status endpoint - Not connected to WiFi. AP IP: ");
+    Serial.println(ipAddress);
+  }
+  
+  // Create a JSON document
+  StaticJsonDocument<512> doc;
+  
+  // Add device status information
+  doc["isRunning"] = isRunning;
+  doc["isPaused"] = isPaused;
+  doc["operatingState"] = operatingState;
+  doc["batteryLevel"] = getBatteryLevel();
+  doc["connectedToWiFi"] = isWifiConnected;
+  doc["ipAddress"] = ipAddress;
+  doc["deviceId"] = getDeviceId();
+  doc["deviceName"] = deviceName.length() > 0 ? deviceName : "AquaSweeper-" + getDeviceId();
+  doc["timestamp"] = millis(); // Add timestamp to help with synchronization
+  
+  // Serialize the JSON document
+  String json;
+  serializeJson(doc, json);
   
   server.send(200, "application/json", json);
   Serial.println("Device status request handled");
@@ -387,6 +544,30 @@ void handleDeviceControl() {
   }
 }
 
+void handleFactoryReset() {
+  addCORSHeaders();
+  
+  Serial.println("Received factory reset request");
+  
+  // Clear WiFi credentials
+  clearStoredWiFiCredentials();
+  
+  // Create response
+  String responseJson = "{";
+  responseJson += "\"success\":true,";
+  responseJson += "\"message\":\"Device has been factory reset. WiFi credentials cleared.\"";
+  responseJson += "}";
+  
+  // Send response
+  server.send(200, "application/json", responseJson);
+  
+  // Wait a moment for the response to be sent
+  delay(500);
+  
+  // Restart the device
+  ESP.restart();
+}
+
 void setup() {
   Serial.begin(115200);
   while (!Serial) delay(100);
@@ -399,9 +580,14 @@ void setup() {
   // Initialize EEPROM
   EEPROM.begin(EEPROM_SIZE);
   
-  // Set WiFi mode and get MAC address
+  // Read WiFi credentials from EEPROM
+  readWiFiCredentials();
+  Serial.print("Stored SSID from EEPROM: ");
+  Serial.println(storedSSID);
+  
+  // Set WiFi mode to AP+STA from the beginning
   WiFi.mode(WIFI_AP_STA);
-  delay(100); // Small delay to ensure WiFi is initialized
+  delay(200); // Short delay to ensure WiFi is initialized
   
   // Get device name from MAC
   deviceName = "AquaSweeper-" + getDeviceId();
@@ -417,14 +603,24 @@ void setup() {
     Serial.println("AP Created Successfully");
     Serial.print("AP IP: ");
     Serial.println(WiFi.softAPIP());
+    Serial.print("MAC Address: ");
+    Serial.println(WiFi.macAddress());
   } else {
-    Serial.println("AP Creation Failed!");
+    Serial.println("AP Creation Failed! Retrying...");
+    delay(1000);
+    ESP.restart();
   }
-
-  // Try to connect to stored WiFi if credentials exist
-  readWiFiCredentials();
-  if (isConfigured) {
-    shouldTryWiFiConnection = true;
+  
+  // If we have stored WiFi credentials, try to connect
+  if (isConfigured && storedSSID.length() > 0) {
+    Serial.println("Found stored WiFi credentials, attempting to connect");
+    
+    // Copy stored credentials to temporary variables
+    strlcpy(wifiSSID, storedSSID.c_str(), sizeof(wifiSSID));
+    strlcpy(wifiPassword, storedPassword.c_str(), sizeof(wifiPassword));
+    
+    // Start connection attempt
+    connectToWiFi();
   }
 
   // Set up web server endpoints
@@ -436,6 +632,13 @@ void setup() {
   
   server.on("/wifi", HTTP_POST, handleWiFiConfig);
   server.on("/wifi", HTTP_OPTIONS, []() {
+    addCORSHeaders();
+    server.send(204);
+  });
+  
+  // Add an alias for /wifi as /wifi-config for compatibility
+  server.on("/wifi-config", HTTP_POST, handleWiFiConfig);
+  server.on("/wifi-config", HTTP_OPTIONS, []() {
     addCORSHeaders();
     server.send(204);
   });
@@ -464,6 +667,12 @@ void setup() {
     addCORSHeaders();
     server.send(204);
   });
+  
+  server.on("/factory-reset", HTTP_POST, handleFactoryReset);
+  server.on("/factory-reset", HTTP_OPTIONS, []() {
+    addCORSHeaders();
+    server.send(204);
+  });
 
   server.begin();
   Serial.println("HTTP server started");
@@ -482,34 +691,63 @@ void loop() {
     }
   }
   
-  // Handle WiFi connection attempts
-  if (shouldTryWiFiConnection) {
-    connectToWiFi();
-  }
-  
   // Check WiFi connection status
   if (isConnectingToWiFi) {
     unsigned long currentTime = millis();
-    if (WiFi.status() != lastWiFiStatus) {
-      lastWiFiStatus = WiFi.status();
-      if (lastWiFiStatus == WL_CONNECTED) {
+    
+    // Check if we've connected
+    if (WiFi.status() == WL_CONNECTED) {
+      if (lastWiFiStatus != WL_CONNECTED) {
         Serial.println("Connected to WiFi!");
         Serial.print("IP address: ");
         Serial.println(WiFi.localIP());
         isConnectingToWiFi = false;
+        lastWiFiStatus = WL_CONNECTED;
+      }
+    } 
+    // Check for connection timeout
+    else if (currentTime - wifiConnectStartTime > WIFI_CONNECT_TIMEOUT) {
+      Serial.println("WiFi connection attempt timed out");
+      isConnectingToWiFi = false;
+      lastWiFiStatus = WiFi.status();
+    }
+    // Status changed but not connected yet
+    else if (WiFi.status() != lastWiFiStatus) {
+      lastWiFiStatus = WiFi.status();
+      Serial.print("WiFi status changed: ");
+      Serial.println(lastWiFiStatus);
+    }
+  }
+  
+  // Check if AP is still running every 30 seconds
+  unsigned long currentTime = millis();
+  if (currentTime - lastAPCheckTime > 30000) {
+    if (WiFi.softAPgetStationNum() == 0) {
+      Serial.println("No stations connected to AP");
+    } else {
+      Serial.print("Stations connected to AP: ");
+      Serial.println(WiFi.softAPgetStationNum());
+    }
+    
+    // Ensure AP is still running
+    if (WiFi.getMode() == WIFI_STA) {
+      Serial.println("AP mode lost. Restoring AP+STA mode...");
+      WiFi.mode(WIFI_AP_STA);
+      delay(100);
+      
+      // Restart AP if needed
+      if (!WiFi.softAPIP()) {
+        Serial.println("AP IP not available. Restarting AP...");
+        WiFi.softAPConfig(IPAddress(192, 168, 4, 1), IPAddress(192, 168, 4, 1), IPAddress(255, 255, 255, 0));
+        WiFi.softAP(deviceName.c_str(), "12345678");
       }
     }
     
-    // Timeout after 30 seconds
-    if (currentTime - wifiConnectStartTime > 30000) {
-      Serial.println("WiFi connection attempt timed out");
-      WiFi.disconnect();
-      isConnectingToWiFi = false;
-      // Try again in 60 seconds
-      shouldTryWiFiConnection = true;
-      wifiConnectStartTime = currentTime;
-    }
+    lastAPCheckTime = currentTime;
   }
+  
+  // Simulate battery drain
+  updateBatteryLevel();
   
   delay(1); // Minimal delay to prevent watchdog issues while keeping response time fast
 }
