@@ -1,0 +1,77 @@
+{
+  "expo": {
+    "name": "AquaSweeper",
+    "slug": "aquasweeper",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "automatic",
+    "splash": {
+      "image": "./assets/splash.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#ffffff"
+    },
+    "assetBundlePatterns": [
+      "**/*"
+    ],
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.aquasweeper.app",
+      "infoPlist": {
+        "NSLocationWhenInUseUsageDescription": "AquaSweeper needs access to location to scan for nearby devices",
+        "NSLocationAlwaysAndWhenInUseUsageDescription": "AquaSweeper needs access to location to scan for nearby devices",
+        "NSLocalNetworkUsageDescription": "AquaSweeper needs access to your local network to connect to your device",
+        "NSBonjourServices": ["_http._tcp"],
+        "LSApplicationQueriesSchemes": ["prefs", "App-prefs"],
+        "UIBackgroundModes": [
+          "location",
+          "fetch"
+        ]
+      }
+    },
+    "android": {
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#ffffff"
+      },
+      "package": "com.aquasweeper.app",
+      "permissions": [
+        "ACCESS_COARSE_LOCATION",
+        "ACCESS_FINE_LOCATION",
+        "ACCESS_BACKGROUND_LOCATION"
+      ]
+    },
+    "web": {
+      "favicon": "./assets/favicon.png"
+    },
+    "plugins": [
+      [
+        "expo-location",
+        {
+          "locationAlwaysAndWhenInUsePermission": "AquaSweeper needs access to location to scan for nearby devices"
+        }
+      ],
+      [
+        "react-native-wifi-reborn",
+        {
+          "locationAlwaysAndWhenInUsePermission": "AquaSweeper needs access to location to scan for nearby devices"
+        }
+      ],
+      [
+        "react-native-permissions",
+        {
+          "ios": {
+            "locationAlwaysAndWhenInUse": true,
+            "locationWhenInUse": true
+          },
+          "android": {
+            "ACCESS_COARSE_LOCATION": true,
+            "ACCESS_FINE_LOCATION": true,
+            "ACCESS_BACKGROUND_LOCATION": true
+          }
+        }
+      ]
+    ],
+    "newArchEnabled": true
+  }
+}

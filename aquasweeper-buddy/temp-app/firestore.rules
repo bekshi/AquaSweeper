@@ -1,0 +1,19 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /users/{userId} {
+      allow read, write: if request.auth != null && request.auth.uid == userId;
+      
+      // Allow access to skimmers subcollection
+      match /skimmers/{skimmerId} {
+        allow read, write: if request.auth != null && request.auth.uid == userId;
+        
+        // Allow access to cleaning sessions subcollection
+        match /cleaningSessions/{sessionId} {
+          allow read, write: if request.auth != null && request.auth.uid == userId;
+        }
+      }
+    }
+  }
+}
