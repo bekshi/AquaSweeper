@@ -51,8 +51,6 @@ The AquaSweeper Buddy app is your control center for the AquaSweeper device. It 
 - Device settings and preferences
 - Historical cleaning data and analytics
 
-For more details about the mobile app, check out the [AquaSweeper Buddy README](/aquasweeper-buddy/README.md).
-
 ## 🔧 Setup and Installation
 
 ### Prerequisites
@@ -71,8 +69,9 @@ For more details about the mobile app, check out the [AquaSweeper Buddy README](
 2. Open the project in your IDE of choice
 3. Install all necessary dependencies
 4. Run AquaSweeper Buddy (/aquasweeper-buddy/temp-app) using `npx expo start`
-5. Create an account
-6. Follow the in-app pairing process
-7. Start your first cleaning session!
+5. Build the project using Expo Go on your mobile device
+6. Create an account
+7. Follow the in-app pairing process
+8. Start your first cleaning session!
 
 Made with ❤️ by the AquaSweeper Team
