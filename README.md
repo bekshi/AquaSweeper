@@ -67,40 +67,12 @@ For more details about the mobile app, check out the [AquaSweeper Buddy README](
 4. Place in pool following the guide
 
 ### App Installation
-1. Download AquaSweeper Buddy from your app store
-2. Create an account
-3. Follow the in-app pairing process
-4. Start your first cleaning session!
-
-## 🤝 Contributing
-
-We welcome contributions to the AquaSweeper project! Whether you're interested in improving the hardware controller, enhancing the mobile app, or fixing bugs, here's how you can help:
-
-1. Fork the repository
-2. Create a feature branch
-3. Make your changes
-4. Submit a pull request
-
-Please read our [Contributing Guidelines](CONTRIBUTING.md) for more details.
-
-## 📄 License
-
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-
-## 🙏 Acknowledgments
-
-- Thanks to all our contributors and testers
-- Special thanks to the open-source community
-- Pool owners who provided valuable feedback
-
-## 📞 Support
-
-Need help? We're here for you!
-
-- 📧 Email: support@aquasweeper.com
-- 💬 Discord: [Join our community](https://discord.gg/aquasweeper)
-- 📚 Documentation: [docs.aquasweeper.com](https://docs.aquasweeper.com)
-
----
+1. Install the Expo Go app from your app store (App Store or Google Play)
+2. Open the project in your IDE of choice
+3. Install all necessary dependencies
+4. Run AquaSweeper Buddy (/aquasweeper-buddy/temp-app) using `npx expo start`
+5. Create an account
+6. Follow the in-app pairing process
+7. Start your first cleaning session!
 
 Made with ❤️ by the AquaSweeper Team
